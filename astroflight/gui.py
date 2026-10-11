@@ -373,7 +373,7 @@ class MainWindow(QMainWindow):
         sp = QSplitter()
         sp.addWidget(self.tabs)
         sp.addWidget(right)
-        sp.setSizes([520, 980])
+        sp.setSizes([560, 940])
         self.setCentralWidget(sp)
 
     def _build_menu(self):
