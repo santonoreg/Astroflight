@@ -9,9 +9,11 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPushButton,
                                QLabel, QSlider, QDoubleSpinBox, QSpinBox, QCheckBox, QGroupBox, QFileDialog, QLineEdit,
                                QPlainTextEdit, QProgressBar, QSplitter, QScrollArea, QListWidget, QComboBox, QMessageBox,
-                               QFormLayout, QProgressDialog, QSizePolicy, QStackedWidget, QButtonGroup, QRadioButton)
+                               QFormLayout, QProgressDialog, QSizePolicy, QStackedWidget, QButtonGroup, QRadioButton, QTabWidget)
 
 from .config import Params, UI_GROUPS
+from .widgets import Signals, Worker, ParamRow
+from .gui_auto import AutoPanel
 from .project import Project
 from .renderer import Renderer
 from .camera import CamState, Keyframe, CameraPath, pose_from_state, make_flythrough, make_dive
@@ -19,105 +21,6 @@ from . import wcs_solve as ws
 from . import imageio_ as io
 from . import export as ex
 from . import depth_ai
-
-
-# ------------------------------------------------------------------------------------------------
-class Signals(QObject):
-    progress = Signal(float, str)
-    done = Signal(object)
-    error = Signal(str)
-
-
-class Worker(QRunnable):
-    def __init__(self, fn):
-        super().__init__()
-        self.setAutoDelete(False)          # το κρατάμε ζωντανό εμείς (αλλιώς χάνονται τα σήματα)
-        self.fn = fn
-        self.s = Signals()
-
-    def run(self):
-        try:
-            res = self.fn(lambda f, m="": self.s.progress.emit(float(f), str(m)))
-            self.s.done.emit(res)
-        except Exception as e:  # noqa
-            self.s.error.emit(f"{e}\n\x00\n{traceback.format_exc()[-1800:]}")
-
-
-# ------------------------------------------------------------------------------------------------
-class ParamRow(QWidget):
-    def __init__(self, params: Params, spec, on_change=None):
-        super().__init__()
-        key, label, kind, lo, hi, step, tip = spec
-        self.params, self.key, self.kind, self.lo, self.hi, self.on_change = params, key, kind, lo, hi, on_change
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lb = QLabel(label)
-        lb.setMinimumWidth(170)
-        lb.setToolTip(tip)
-        lay.addWidget(lb)
-        val = getattr(params, key)
-        if kind == "b":
-            self.w = QCheckBox()
-            self.w.setChecked(bool(val))
-            self.w.toggled.connect(self._set)
-            lay.addWidget(self.w)
-            lay.addStretch(1)
-        elif kind == "i":
-            self.w = QSpinBox()
-            self.w.setRange(int(lo), int(hi))
-            self.w.setSingleStep(int(step) or 1)
-            self.w.setValue(int(val))
-            self.w.valueChanged.connect(self._set)
-            lay.addWidget(self.w)
-        else:
-            self.sl = QSlider(Qt.Horizontal)
-            self.sl.setRange(0, 1000)
-            self.w = QDoubleSpinBox()
-            self.w.setRange(lo, hi)
-            self.w.setDecimals(3 if step < 0.01 else 2)
-            self.w.setSingleStep(step)
-            self.w.setValue(float(val))
-            self.sl.setValue(self._to_sl(float(val)))
-            self.sl.valueChanged.connect(self._from_sl)
-            self.w.valueChanged.connect(self._from_spin)
-            lay.addWidget(self.sl, 1)
-            lay.addWidget(self.w)
-        self.setToolTip(tip)
-
-    def _to_sl(self, v):
-        return int(round((v - self.lo) / (self.hi - self.lo) * 1000))
-
-    def _from_sl(self, i):
-        v = self.lo + (self.hi - self.lo) * i / 1000.0
-        self.w.blockSignals(True)
-        self.w.setValue(v)
-        self.w.blockSignals(False)
-        self._set(self.w.value())
-
-    def _from_spin(self, v):
-        self.sl.blockSignals(True)
-        self.sl.setValue(self._to_sl(v))
-        self.sl.blockSignals(False)
-        self._set(v)
-
-    def _set(self, v):
-        cur = getattr(self.params, self.key)
-        setattr(self.params, self.key, type(cur)(v))
-        if self.on_change:
-            self.on_change(self.key)
-
-    def refresh(self):
-        v = getattr(self.params, self.key)
-        self.w.blockSignals(True)
-        if self.kind == "b":
-            self.w.setChecked(bool(v))
-        else:
-            self.w.setValue(v)
-            if self.kind == "f":
-                self.sl.blockSignals(True)
-                self.sl.setValue(self._to_sl(float(v)))
-                self.sl.blockSignals(False)
-        self.w.blockSignals(False)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -178,7 +81,8 @@ class GLView(QOpenGLWidget):
             return
         m = self.renderer.scene.meta
         pose = pose_from_state(self.cam, m["D0"], m["W0"])
-        self.renderer.render(fbo, size, pose, self.proj.p, hdr_scale=self.proj.p.preview_scale)
+        self.renderer.render(fbo, size, pose, self.proj.p, hdr_scale=self.proj.p.preview_scale,
+                             fov_mul=math.exp(self.cam.logfov))
 
     # --- αλληλεπίδραση
     def mousePressEvent(self, e):
@@ -296,6 +200,7 @@ BUILD_KEYS = ({s[0] for g in ("Βάθος νεφελώματος", "Όγκος (
 STAR_KEYS = {"stretched_input", "gamma", "star_sigma", "max_stars", "gaia_glim", "match_tol_px",
              "extra_enable", "extra_radius_deg", "extra_glim"}
 LAST = len(STEP_NAMES) - 1
+DIVE_KEYS = {"dive_zoom", "dive_fov_max", "dive_depth", "dive_auto_poi", "dive_fx", "dive_fy", "dive_drift", "duration"}
 
 
 class MainWindow(QMainWindow):
@@ -325,6 +230,9 @@ class MainWindow(QMainWindow):
         self._prev_timer = QTimer(self)
         self._prev_timer.setSingleShot(True)
         self._prev_timer.timeout.connect(self._show_preview)
+        self._regen_timer = QTimer(self)
+        self._regen_timer.setSingleShot(True)
+        self._regen_timer.timeout.connect(self._regen_path)
         self._build_ui()
         self._build_menu()
         self._goto(0)
@@ -353,7 +261,7 @@ class MainWindow(QMainWindow):
     def _intro(self, text):
         l = QLabel(text)
         l.setWordWrap(True)
-        l.setStyleSheet("color:#9aa0b4;")
+        l.setStyleSheet("color:#8d93a8;")
         return l
 
     def _note(self, text=""):
@@ -378,6 +286,7 @@ class MainWindow(QMainWindow):
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setFrameShape(QScrollArea.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         sa.setWidget(widget)
         return sa
 
@@ -456,10 +365,15 @@ class MainWindow(QMainWindow):
         self.mouse_hint.setWordWrap(True)
         rl.addWidget(self.mouse_hint)
 
+        self.auto = AutoPanel(self)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.auto, "⚡ Αυτόματο (προτεινόμενο)")
+        self.tabs.addTab(left, "🛠 Βήμα-βήμα (προχωρημένο)")
+        self.tabs.currentChanged.connect(self._tab_changed)
         sp = QSplitter()
-        sp.addWidget(left)
+        sp.addWidget(self.tabs)
         sp.addWidget(right)
-        sp.setSizes([470, 1030])
+        sp.setSizes([520, 980])
         self.setCentralWidget(sp)
 
     def _build_menu(self):
@@ -471,6 +385,11 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         a = m.addAction("Έξοδος")
         a.triggered.connect(self.close)
+        v = self.menuBar().addMenu("Προβολή")
+        a = v.addAction("Εμφάνιση επεξηγήσεων κάτω από τις ρυθμίσεις")
+        a.setCheckable(True)
+        a.setChecked(True)
+        a.toggled.connect(ParamRow.set_help_visible)
 
     # ================================================================== πλοήγηση
     def _done(self, i: int) -> bool:
@@ -539,6 +458,8 @@ class MainWindow(QMainWindow):
     def _set_busy(self, b: bool):
         self.busy = b
         self._update_nav()
+        if hasattr(self, "auto"):
+            self.auto.set_busy(b)
 
     def _invalidate(self, stars=False, scene=True):
         if stars:
@@ -558,8 +479,9 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.img_label)
         g, gl = self._group("Τύπος δεδομένων")
         self._prow(gl, "stretched_input", "Η εικόνα είναι ήδη τεντωμένη (non-linear)", "b", 0, 1, 0,
-                   "Τσέκαρέ το για τελικές επεξεργασμένες εικόνες. Ξετσέκαρέ το μόνο για γραμμικά (linear) δεδομένα.")
-        self._prow(gl, "gamma", "Gamma τεντώματος", "f", 1.0, 3.0, 0.05)
+                   "Τσέκαρέ το για τελικές, επεξεργασμένες εικόνες (αυτές που βλέπεις κανονικά φωτεινές). Ξετσέκαρέ το μόνο για ακατέργαστα, σκοτεινά γραμμικά (linear) δεδομένα.")
+        self._prow(gl, "gamma", "Gamma τεντώματος", "f", 1.0, 3.0, 0.05,
+                   "Πώς μετατρέπεται η τεντωμένη εικόνα σε γραμμικά δεδομένα ώστε να προσομοιωθεί σωστά το φως. Σχεδόν ποτέ δεν χρειάζεται αλλαγή (2.2 = τυπική οθόνη).")
         gl.addWidget(self._intro("Σημείωση: το StarNet++ δουλεύει καλύτερα σε τεντωμένες εικόνες. Για γραμμικά δεδομένα η εφαρμογή τα τεντώνει προσωρινά."))
         lay.addWidget(g)
         lay.addWidget(self._btn("Άνοιγμα αποθηκευμένου project…", self.load_project))
@@ -637,8 +559,10 @@ class MainWindow(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
         g, gl = self._group("Εντοπισμός αστεριών")
-        self._prow(gl, "star_sigma", "Κατώφλι (σ)", "f", 3, 30, 0.5, "Μικρότερο = περισσότερα (και πιο αμυδρά) αστέρια")
-        self._prow(gl, "max_stars", "Μέγιστος αριθμός", "i", 100, 30000, 500)
+        self._prow(gl, "star_sigma", "Κατώφλι (σ)", "f", 3, 30, 0.5,
+                   "Πόσο έντονο πρέπει να είναι ένα σημείο για να θεωρηθεί αστέρι (σε φορές τον θόρυβο). Μικρότερο = περισσότερα, πιο αμυδρά αστέρια (και κάποιες ψευδείς ανιχνεύσεις).")
+        self._prow(gl, "max_stars", "Μέγιστος αριθμός", "i", 100, 30000, 500,
+                   "Όριο στον αριθμό αστεριών που γίνονται 3D. Περισσότερα = πιο πυκνό πεδίο αστεριών, πιο αργή απόδοση.")
         lay.addWidget(g)
 
         g, gl = self._group("Αφαίρεση αστεριών (starless)")
@@ -695,14 +619,19 @@ class MainWindow(QMainWindow):
             gl.addWidget(rb)
         self.rb_syn.setChecked(True)
         self.dist_group.idToggled.connect(lambda *_: self._invalidate(stars=True))
-        self._prow(gl, "gaia_glim", "Gaia: όριο G", "f", 12, 21, 0.5)
-        self._prow(gl, "match_tol_px", "Ανοχή αντιστοίχισης (px)", "f", 1, 10, 0.5)
+        self._prow(gl, "gaia_glim", "Gaia: όριο G", "f", 12, 21, 0.5,
+                   "Πόσο αμυδρά αστέρια του καταλόγου Gaia κατεβαίνουν για αντιστοίχιση (μεγαλύτερο = πιο αμυδρά, πιο αργό κατέβασμα). 15.5 αρκεί συνήθως.")
+        self._prow(gl, "match_tol_px", "Ανοχή αντιστοίχισης (px)", "f", 1, 10, 0.5,
+                   "Πόσο μακριά (σε pixel) μπορεί να πέφτει ένα αστέρι της φωτογραφίας από το αντίστοιχο του Gaia ώστε να θεωρηθούν το ίδιο αστέρι.")
         lay.addWidget(g)
 
         g, gl = self._group("Αστέρια εκτός κάδρου (για περιστροφή της κάμερας)")
-        self._prow(gl, "extra_enable", "Ενεργό", "b", 0, 1, 0, "Γεμίζει τον ουρανό όταν η κάμερα βλέπει από άλλη γωνία")
-        self._prow(gl, "extra_radius_deg", "Ακτίνα κώνου (°, 0=αυτόματο)", "f", 0, 20, 0.5)
-        self._prow(gl, "extra_glim", "Gaia όριο G (εκτός κάδρου)", "f", 8, 17, 0.5)
+        self._prow(gl, "extra_enable", "Ενεργό", "b", 0, 1, 0,
+                   "Προσθέτει αστέρια του Gaia ΕΚΤΟΣ του κάδρου της φωτογραφίας. Χωρίς αυτά, όταν το οπτικό πεδίο ανοίγει στην πτήση, γύρω από το νεφέλωμα θα φαινόταν κενό.")
+        self._prow(gl, "extra_radius_deg", "Ακτίνα κώνου (°, 0=αυτόματο)", "f", 0, 20, 0.5,
+                   "Πόσο μακριά από το κέντρο της φωτογραφίας (σε μοίρες ουρανού) προστίθενται αστέρια. 0 = αυτόματα με βάση το πεδίο.")
+        self._prow(gl, "extra_glim", "Gaia όριο G (εκτός κάδρου)", "f", 8, 17, 0.5,
+                   "Πόσο αμυδρά είναι τα επιπλέον αστέρια (μικρότερος αριθμός = λιγότερα, μόνο τα φωτεινότερα).")
         lay.addWidget(g)
 
         lay.addWidget(self._big("▶  Επεξεργασία αστεριών", self.process_stars))
@@ -726,7 +655,7 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(w)
         g, gl = self._group("Αντικείμενο")
         self._prow(gl, "object_distance_pc", "Απόσταση αντικειμένου (pc)", "f", 5, 30000, 1,
-                   "Π.χ. M42 ≈ 412 pc, Πλειάδες ≈ 136 pc. 1 pc = 3.26 έτη φωτός")
+                   "Πόσο μακριά είναι το νεφέλωμα. Π.χ. M42 ≈ 412 pc, Πλειάδες ≈ 136 pc, Rosette ≈ 1500 pc (1 pc = 3.26 έτη φωτός). Καθορίζει την κλίμακα του 3D χώρου.")
         self.suggest_label = self._note("")
         gl.addWidget(self.suggest_label)
         self.suggest_btn = self._btn("Χρήση προτεινόμενης απόστασης", self._apply_suggest)
@@ -773,12 +702,18 @@ class MainWindow(QMainWindow):
         g, gl = self._group("Πτήση μέσα στο νεφέλωμα (προτεινόμενη)")
         gl.addWidget(self._intro("Ευθεία πτήση από το σημείο λήψης προς το εσωτερικό του αντικειμένου: περνάς ανάμεσα από τα αστέρια "
                                  "και βυθίζεσαι μέσα στα νέφη. Χωρίς περιστροφή γύρω από το αντικείμενο."))
-        self._prow(gl, "dive_auto_poi", "Αυτόματος στόχος", "b", 0, 1, 0, "Στόχος = η φωτεινότερη περιοχή του νεφελώματος")
-        self._prow(gl, "dive_fx", "Στόχος X (−1 αριστερά … 1 δεξιά)", "f", -0.9, 0.9, 0.01)
-        self._prow(gl, "dive_fy", "Στόχος Y (−1 κάτω … 1 πάνω)", "f", -0.9, 0.9, 0.01)
+        self._prow(gl, "dive_auto_poi", "Αυτόματος στόχος", "b", 0, 1, 0, "Η κάμερα πετά προς τη φωτεινότερη περιοχή του νεφελώματος. Ξετσέκαρέ το για να ορίσεις εσύ στόχο με τα X/Y παρακάτω.")
+        self._prow(gl, "dive_fx", "Στόχος X (−1 αριστερά … 1 δεξιά)", "f", -0.9, 0.9, 0.01,
+                   "Προς ποιο σημείο της φωτογραφίας (οριζόντια) πετά η κάμερα. 0 = κέντρο.")
+        self._prow(gl, "dive_fy", "Στόχος Y (−1 κάτω … 1 πάνω)", "f", -0.9, 0.9, 0.01,
+                   "Προς ποιο σημείο της φωτογραφίας (κατακόρυφα) πετά η κάμερα. 0 = κέντρο.")
         self._prow(gl, "dive_depth", "Βάθος τέλους (0 μπροστά … 1 πίσω)", "f", 0.0, 1.0, 0.01,
-                   "Πόσο μέσα στα νέφη τελειώνει η πτήση, ως ποσοστό της εκπομπής στη στήλη του στόχου")
-        self._prow(gl, "dive_drift", "Ήπια καμπύλη (× πλάτος)", "f", -0.3, 0.3, 0.01, "0 = απολύτως ευθεία")
+                   "Πόσο μέσα στα νέφη τελειώνει η πτήση. Μικρή τιμή = μένεις στα εξωτερικά, φωτεινά στρώματα· μεγάλη = βαθιά μέσα (πιο σκοτεινά).")
+        self._prow(gl, "dive_zoom", "Zoom προσέγγισης (×)", "f", 1.0, 8.0, 0.1,
+                   "Πόσες φορές μεγαλύτερο φαίνεται το νεφέλωμα όταν η κάμερα φτάνει στην είσοδό του. 1 = όσο στη φωτογραφία, μεγάλο = «ξεχειλίζει» από το κάδρο.")
+        self._prow(gl, "dive_fov_max", "Μέγιστο οπτικό πεδίο (°)", "f", 20, 100, 1,
+                   "Πόσο ανοίγει το κάδρο όταν η κάμερα μπαίνει μέσα στα νέφη (κατακόρυφη γωνία). Μεγαλύτερο = βλέπεις περισσότερα στρώματα γύρω σου.")
+        self._prow(gl, "dive_drift", "Ήπια καμπύλη (× πλάτος)", "f", -0.3, 0.3, 0.01, "Πόσο ξεφεύγει πλάγια η διαδρομή στη μέση (σε πλάτη νεφελώματος). 0 = απολύτως ευθεία γραμμή.")
         gl.addWidget(self._big("✈  Δημιουργία πτήσης μέσα στα νέφη", self.make_dive_path))
         lay.addWidget(g)
         g, gl = self._group("Διαδρομή κάμερας (κυκλική, παλιά)")
@@ -812,8 +747,9 @@ class MainWindow(QMainWindow):
         row.addWidget(self._btn("Αντικατάσταση", self.replace_kf))
         row.addWidget(self._btn("Διαγραφή", self.del_kf))
         gl.addLayout(row)
-        self._prow(gl, "duration", "Διάρκεια (s)", "f", 1, 300, 0.5)
-        self._prow(gl, "ease", "Ομαλή εκκίνηση/τέλος", "b", 0, 1, 0)
+        self._prow(gl, "duration", "Διάρκεια (s)", "f", 1, 300, 0.5, "Πόσο διαρκεί το βίντεο, σε δευτερόλεπτα.")
+        self._prow(gl, "ease", "Ομαλή εκκίνηση/τέλος", "b", 0, 1, 0,
+                   "Εφαρμόζεται μόνο σε κυκλικές/χειροκίνητες διαδρομές (η ευθεία πτήση έχει δική της ομαλή εκκίνηση και προσγείωση).")
         lay.addWidget(g)
         g, gl = self._group("Εξαγωγή")
         form = QFormLayout()
@@ -825,7 +761,7 @@ class MainWindow(QMainWindow):
         self.res_combo.currentIndexChanged.connect(self._res_changed)
         form.addRow("Ανάλυση:", self.res_combo)
         gl.addLayout(form)
-        self._prow(gl, "fps", "FPS", "i", 12, 120, 1)
+        self._prow(gl, "fps", "FPS", "i", 12, 120, 1, "Καρέ ανά δευτερόλεπτο του βίντεο. 30 είναι το τυπικό, 60 πιο ρευστό (διπλάσιος χρόνος εξαγωγής).")
         self._prow(gl, "ssaa", "Antialiasing (SSAA ×)", "i", 1, 3, 1, "2 = πολύ καλύτερη ποιότητα, 4× πιο αργό")
         gl.addWidget(self._big("🎬  Εξαγωγή MP4…", self.export_mp4))
         gl.addWidget(self._btn("Εξαγωγή ακολουθίας PNG…", self.export_png))
@@ -840,6 +776,8 @@ class MainWindow(QMainWindow):
         self.logbox.verticalScrollBar().setValue(self.logbox.verticalScrollBar().maximum())
 
     def _param_changed(self, key):
+        if key in DIVE_KEYS and self.proj.scene is not None and self.proj.path_kind == "dive":
+            self._regen_timer.start(250)
         if key in STAR_KEYS:
             self._invalidate(stars=True)
             if key in ("stretched_input", "gamma"):
@@ -925,6 +863,9 @@ class MainWindow(QMainWindow):
         self.show_sl.setChecked(False)
         self._show_preview()
         self.rstack.setCurrentWidget(self.preview)
+        self.playbar.setVisible(False)
+        self.mouse_hint.setVisible(False)
+        self.auto.refresh_image()
         self._update_nav()
         if advance:
             self._goto(1)
@@ -1170,6 +1111,60 @@ class MainWindow(QMainWindow):
         qi = QImage(g.data, g.shape[1], g.shape[0], g.shape[1], QImage.Format_Grayscale8).copy()
         self.depth_img.setPixmap(QPixmap.fromImage(qi).scaled(300, 160, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
+    # ================================================================== αυτόματη επεξεργασία: ολοκλήρωση
+    def _auto_finished(self, summary):
+        p = self.proj
+        self.stale_stars = self.stale_scene = False
+        self._refresh_rows()
+        self.scale_spin.blockSignals(True)
+        self.scale_spin.setValue(p.scale_arcsec * p.down)
+        self.scale_spin.blockSignals(False)
+        self.dist_group.button(0 if summary.get("gaia") else 1).setChecked(True)
+        (self.rb_sn if summary.get("starnet") else self.rb_auto).setChecked(True)
+        self.stale_stars = self.stale_scene = False
+        self._set_wcs_text()
+        self.suggest_label.setText("")
+        self.rstack.setCurrentWidget(self.view)
+        self.view.set_scene(p.scene, p.tone)
+        self._refresh_kf()
+        self._show_depth(p.scene)
+        self.view.set_time(0.0)
+        self.t_slider.blockSignals(True)
+        self.t_slider.setValue(0)
+        self.t_slider.blockSignals(False)
+        self.playbar.setVisible(True)
+        self.mouse_hint.setVisible(True)
+        self._update_nav()
+        self.statusBar().showMessage("Έτοιμο! Πάτα «Αναπαραγωγή» (Space) για να δεις την πτήση.")
+
+    def _show_flight(self):
+        if self.proj.scene is None:
+            return
+        self.tabs.setCurrentIndex(1)
+        self._goto(5)
+        self.view.set_time(0.0)
+        if not self.view.playing:
+            self._toggle_play()
+
+    def _tab_changed(self, i):
+        if i == 0:
+            gl = self.proj.scene is not None and not self.stale_scene
+            self.rstack.setCurrentWidget(self.view if gl else self.preview)
+            self.playbar.setVisible(gl)
+            self.mouse_hint.setVisible(gl)
+        else:
+            self._on_enter(self.step)
+
+    def _regen_path(self):
+        if self.proj.scene is None or self.proj.path_kind != "dive":
+            return
+        self.proj.make_dive_path()
+        for r in self.rows:
+            if r.key in ("dive_fx", "dive_fy"):
+                r.refresh()
+        self._refresh_kf()
+        self.view.update()
+
     # ================================================================== βήμα 6: κάμερα / keyframes
     def _update_path(self):
         self.view.path = CameraPath(self.proj.keyframes, self.proj.p.duration, self.proj.p.ease) if self.proj.keyframes else None
@@ -1212,9 +1207,11 @@ class MainWindow(QMainWindow):
         m = sc.meta
         self.proj.keyframes = make_flythrough(m["D0"], m["W0"], self.end_dist.value(), self.end_az.value(),
                                               self.end_el.value(), self.proj.p.duration)
+        self.proj.path_kind = "orbit"
         self._refresh_kf()
 
     def add_kf(self):
+        self.proj.path_kind = "custom"
         t = self.kf_time.value()
         ks = [k for k in self.proj.keyframes if abs(k.t - t) > 1e-3]
         ks.append(Keyframe(t, CamState(**self.view.cam.to_dict())))
@@ -1222,6 +1219,7 @@ class MainWindow(QMainWindow):
         self._refresh_kf()
 
     def replace_kf(self):
+        self.proj.path_kind = "custom"
         r = self.kf_list.currentRow()
         if 0 <= r < len(self.proj.keyframes):
             self.proj.keyframes[r] = Keyframe(self.kf_time.value(), CamState(**self.view.cam.to_dict()))
@@ -1229,6 +1227,7 @@ class MainWindow(QMainWindow):
             self._refresh_kf()
 
     def del_kf(self):
+        self.proj.path_kind = "custom"
         r = self.kf_list.currentRow()
         if 0 <= r < len(self.proj.keyframes):
             del self.proj.keyframes[r]
@@ -1318,10 +1317,28 @@ class MainWindow(QMainWindow):
         self.view.makeCurrent()
         try:
             a = self.view.renderer.render_to_array(pose_from_state(self.view.cam, m["D0"], m["W0"]), p,
-                                                   (p.out_width, p.out_height), max(1, p.ssaa))
+                                                   (p.out_width, p.out_height), max(1, p.ssaa),
+                                                   fov_mul=math.exp(self.view.cam.logfov))
         finally:
             self.view.doneCurrent()
         io.save_png(path, a / 255.0)
+
+
+def apply_dark_theme(app):
+    """Σκούρο θέμα (Fusion) – ταιριάζει με το σκούρο παράθυρο προεπισκόπησης και είναι πιο άνετο για αστροφωτογραφίες."""
+    from PySide6.QtGui import QPalette, QColor
+    app.setStyle("Fusion")
+    pal = QPalette()
+    base, alt, text, hl = QColor(30, 31, 38), QColor(40, 42, 52), QColor(220, 222, 232), QColor(59, 95, 192)
+    for role, col in ((QPalette.Window, QColor(37, 38, 46)), (QPalette.WindowText, text), (QPalette.Base, base),
+                      (QPalette.AlternateBase, alt), (QPalette.ToolTipBase, alt), (QPalette.ToolTipText, text),
+                      (QPalette.Text, text), (QPalette.Button, QColor(50, 52, 64)), (QPalette.ButtonText, text),
+                      (QPalette.BrightText, QColor(255, 255, 255)), (QPalette.Highlight, hl), (QPalette.HighlightedText, QColor(255, 255, 255)),
+                      (QPalette.PlaceholderText, QColor(120, 124, 140))):
+        pal.setColor(role, col)
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        pal.setColor(QPalette.Disabled, role, QColor(110, 113, 128))
+    app.setPalette(pal)
 
 
 def main():
@@ -1331,6 +1348,7 @@ def main():
     fmt.setSwapInterval(1)
     QSurfaceFormat.setDefaultFormat(fmt)
     app = QApplication(sys.argv)
+    apply_dark_theme(app)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

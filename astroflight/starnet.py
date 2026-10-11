@@ -9,8 +9,9 @@
    {in} = αρχείο εισόδου, {out} = αρχείο εξόδου, {stride} = τιμή stride.
 """
 from __future__ import annotations
-import os, sys, shutil, subprocess, tempfile, glob
+import os, shutil, tempfile, glob
 import numpy as np
+from .runner import run_cmd
 
 DEFAULT_ARGS = ""          # κενό = αυτόματο ανά έκδοση
 ARGS_V1 = "{in} {out} {stride}"
@@ -65,7 +66,7 @@ def build_cmd(exe: str, fin: str, fout: str, args_template: str = "", stride: in
 
 
 def run_starnet(exe: str, stretched01: np.ndarray, args_template: str = "", stride: int = 0,
-                timeout: float = 3600.0, log=print) -> np.ndarray:
+                timeout: float = 3600.0, log=print, cancel=None, tick=None) -> np.ndarray:
     """Τρέχει το StarNet στην ΤΕΝΤΩΜΕΝΗ εικόνα (HxWx3, 0..1) και επιστρέφει την starless (ίδιο μέγεθος)."""
     if not exe or not os.path.isfile(exe):
         raise RuntimeError("Δεν βρέθηκε το εκτελέσιμο του StarNet. Όρισε τη διαδρομή (π.χ. C:\\Program Files\\StarNet2\\bin\\starnet2.exe).")
@@ -78,11 +79,8 @@ def run_starnet(exe: str, stretched01: np.ndarray, args_template: str = "", stri
         _write_tiff16(fin, stretched01)
         cmd = build_cmd(exe, fin, fout, args_template, stride)
         log("StarNet: " + " ".join(cmd))
-        kw = {}
-        if sys.platform.startswith("win"):
-            kw["creationflags"] = 0x08000000           # CREATE_NO_WINDOW
         cwd = os.path.dirname(os.path.abspath(exe))
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, errors="replace", **kw)
+        rc, text = run_cmd(cmd, cwd=cwd, timeout=timeout, tick=tick, cancel=cancel)
         out = fout
         if not os.path.isfile(out):
             # προεπιλεγμένο όνομα εξόδου όταν δεν δοθεί
@@ -91,8 +89,7 @@ def run_starnet(exe: str, stretched01: np.ndarray, args_template: str = "", stri
             cands += glob.glob(os.path.join(tmp, "*starless*"))
             out = next((c for c in cands if os.path.isfile(c)), None)
         if out is None:
-            msg = (r.stdout or "") + "\n" + (r.stderr or "")
-            raise RuntimeError(f"Το StarNet δεν δημιούργησε αρχείο εξόδου (κωδικός {r.returncode}).\n{msg.strip()[-800:]}\n"
+            raise RuntimeError(f"Το StarNet δεν δημιούργησε αρχείο εξόδου (κωδικός {rc}).\n{text.strip()[-800:]}\n"
                                "Έλεγξε ότι το πακέτο είναι πλήρες (τα αρχεία βαρών/DLL μένουν μαζί με το εκτελέσιμο) και ότι το «πρότυπο ορισμάτων» ταιριάζει στην έκδοσή σου.")
         res = _read_tiff(out)
         if res.shape[:2] != stretched01.shape[:2]:

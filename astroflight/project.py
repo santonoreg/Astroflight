@@ -22,6 +22,7 @@ class Project:
         self.log = log
         self.reset()
         self.keyframes: list[Keyframe] = []
+        self.path_kind = "dive"                      # dive | orbit | custom
         self.cache_dir = os.path.join(os.path.expanduser("~"), ".astroflight", "cache")
         self.astap_path: str | None = ws.find_astap()
         self.starnet_path: str | None = sn.find_starnet()
@@ -102,7 +103,7 @@ class Project:
         self.starless_path = path
         self.log(f"Φορτώθηκε starless: {os.path.basename(path)}")
 
-    def starnet_starless(self, progress=None):
+    def starnet_starless(self, progress=None, cancel=None, tick=None):
         """Αφαίρεση αστεριών με StarNet++ (CLI). Το StarNet θέλει τεντωμένη εικόνα: αν τα δεδομένα είναι γραμμικά,
         τεντώνονται προσωρινά (MTF) και το αποτέλεσμα επιστρέφει στο γραμμικό."""
         if self.img is None:
@@ -112,14 +113,14 @@ class Project:
             raise RuntimeError("Δεν βρέθηκε το StarNet. Όρισε τη διαδρομή του εκτελέσιμου.")
         self.relinearize()
         if self.p.stretched_input:
-            res = sn.run_starnet(exe, self.img, self.starnet_args, self.starnet_stride, log=self.log)
+            res = sn.run_starnet(exe, self.img, self.starnet_args, self.starnet_stride, log=self.log, cancel=cancel, tick=tick)
             res = np.minimum(res, self.img)             # η starless δεν μπορεί να είναι φωτεινότερη από το πρωτότυπο
             self.starless_img = res
             self.starless_lin = io.to_linear(res, True, self.p.gamma)
         else:
             tp = self.tone
             st = io.apply_tone(self.lin, tp).astype(np.float32)
-            res = sn.run_starnet(exe, st, self.starnet_args, self.starnet_stride, log=self.log)
+            res = sn.run_starnet(exe, st, self.starnet_args, self.starnet_stride, log=self.log, cancel=cancel, tick=tick)
             res = np.minimum(res, st)
             x = io.mtf(1.0 - tp["m"], np.clip(res, 0, 1))          # αντίστροφο του MTF
             lin = tp["black"] + x * (tp["white"] - tp["black"])
@@ -175,12 +176,13 @@ class Project:
     def set_scale(self, arcsec_per_px_original: float):
         self.scale_arcsec = float(arcsec_per_px_original) / self.down
 
-    def solve_astap(self, fov_hint_deg: float | None = None, ra: float | None = None, dec: float | None = None, progress=None):
+    def solve_astap(self, fov_hint_deg: float | None = None, ra: float | None = None, dec: float | None = None, progress=None,
+                    cancel=None, tick=None):
         exe = self.astap_path or ws.find_astap()
         if not exe:
             raise RuntimeError("Δεν βρέθηκε ο ASTAP. Εγκατέστησέ τον (hnsky.org/astap.htm) με βάση αστεριών D50/D20 ή όρισε τη διαδρομή.")
         lum = self.lin.mean(axis=2)
-        self.sky = ws.solve_with_astap(lum, exe, fov_hint_deg, ra, dec, log=self.log)
+        self.sky = ws.solve_with_astap(lum, exe, fov_hint_deg, ra, dec, log=self.log, cancel=cancel, tick=tick)
         self.scale_arcsec = self.sky.pixel_scale_arcsec
         c = self.sky.center(self.W)
         fw, fh = self.sky.fov_deg(self.W)
@@ -303,9 +305,11 @@ class Project:
             fx, fy = suggest_poi(self.starless_lin)
             p.dive_fx, p.dive_fy = float(fx), float(fy)
         fx, fy = float(p.dive_fx), float(p.dive_fy)
+        self.path_kind = "dive"
         z_end = column_depth_quantile(sc, fx, fy, float(p.dive_depth))
         self.keyframes = make_dive(m["D0"], m["W0"], m["E"], m["tx0"], m["ty0"], fx, fy, z_end,
-                                   float(p.dive_drift), float(p.duration))
+                                   float(p.dive_drift), float(p.duration),
+                                   zoom_end=float(p.dive_zoom), fov_max_deg=float(p.dive_fov_max))
         self.log(f"Πτήση: στόχος ({fx:+.2f}, {fy:+.2f}), τέλος στα {z_end:.1f} pc (αρχή {m['D0']:.1f} pc).")
         return self.keyframes
 
@@ -333,5 +337,5 @@ class Project:
                 self.load_starless(d["starless"])
             if d.get("scale_arcsec"):
                 self.set_scale(d["scale_arcsec"])
-        self.keyframes = [Keyframe(k["t"], CamState(**{a: k.get(a, 0.0) for a in ("az", "el", "roll", "logr", "tx", "ty", "tz", "yaw", "pitch")}))
+        self.keyframes = [Keyframe(k["t"], CamState(**{a: k.get(a, 0.0) for a in ("az", "el", "roll", "logr", "tx", "ty", "tz", "yaw", "pitch", "logfov")}))
                           for k in d.get("keyframes", [])]

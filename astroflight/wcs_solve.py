@@ -1,10 +1,11 @@
 """Αστρομετρία: ASTAP plate solve, χειροκίνητο WCS, ανάγνωση .wcs/.fits."""
 from __future__ import annotations
-import os, sys, shutil, subprocess, tempfile, math
+import os, sys, shutil, tempfile, math
 import numpy as np
 from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 from astropy.io import fits
+from .runner import run_cmd
 
 
 class SkyWCS:
@@ -121,7 +122,17 @@ def find_database(astap_exe: str) -> list[str]:
         return []
 
 
-def _run_astap_once(astap_exe: str, fp: str, fov: float | None, ra_deg, dec_deg, timeout: int, log):
+ASTAP_EXIT = {
+    1: "δεν βρέθηκε λύση (το πεδίο ή η περιοχή του ουρανού δεν ταιριάζει με τη βάση αστεριών)",
+    2: "ανιχνεύθηκαν πολύ λίγα αστέρια στην εικόνα",
+    16: "ο ASTAP δεν μπόρεσε να διαβάσει το προσωρινό αρχείο εικόνας",
+    32: "ο ASTAP δεν βρήκε βάση αστεριών (εγκατάστησε π.χ. D50 ή D20 στον φάκελο του ASTAP)",
+    33: "σφάλμα ανάγνωσης της βάσης αστεριών",
+    34: "ο ASTAP δεν μπόρεσε να γράψει το αποτέλεσμα (δικαιώματα φακέλου;)",
+}
+
+
+def _run_astap_once(astap_exe: str, fp: str, fov: float | None, ra_deg, dec_deg, timeout: int, log, cancel=None, tick=None):
     cmd = [astap_exe, "-f", fp, "-wcs", "-log", "-z", "0", "-s", "500", "-fov", f"{fov:.4f}" if fov else "0"]
     if ra_deg is not None and dec_deg is not None:
         cmd += ["-ra", f"{ra_deg / 15.0:.5f}", "-spd", f"{dec_deg + 90.0:.5f}", "-r", "20"]
@@ -129,12 +140,8 @@ def _run_astap_once(astap_exe: str, fp: str, fov: float | None, ra_deg, dec_deg,
         cmd += ["-r", "180"]
     if log:
         log("ASTAP: " + " ".join(cmd))
-    kw = {}
-    if sys.platform.startswith("win"):
-        kw["creationflags"] = 0x08000000                # CREATE_NO_WINDOW
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, errors="replace", **kw)
+    rc, out = run_cmd(cmd, cwd=os.path.dirname(astap_exe) or None, timeout=timeout, tick=tick, cancel=cancel)
     d = os.path.dirname(fp)
-    out = (res.stdout or "") + (res.stderr or "")
     # ο ASTAP στα Windows είναι GUI εφαρμογή: το αποτέλεσμα γράφεται σε .log/.ini δίπλα στην εικόνα
     for f in sorted(os.listdir(d)):
         if f.lower().endswith((".log", ".ini")):
@@ -144,12 +151,12 @@ def _run_astap_once(astap_exe: str, fp: str, fov: float | None, ra_deg, dec_deg,
             except Exception:
                 pass
     ok = os.path.exists(os.path.join(d, "solve.wcs"))
-    return ok, res.returncode, out.strip()
+    return ok, rc, out.strip()
 
 
 def solve_with_astap(lum_for_solve: np.ndarray, astap_exe: str, fov_deg_h: float | None = None,
                      ra_deg: float | None = None, dec_deg: float | None = None, timeout: int = 300,
-                     log=None) -> SkyWCS:
+                     log=None, cancel=None, tick=None) -> SkyWCS:
     """lum_for_solve: 2D float (γραμμή 0 = πάνω). Γράφεται προσωρινό FITS (αναστραμμένο) και τρέχει ο ASTAP.
     Δοκιμάζει πρώτα με το FOV που δόθηκε και μετά με άγνωστο FOV (-fov 0)."""
     H, W = lum_for_solve.shape
@@ -170,8 +177,10 @@ def solve_with_astap(lum_for_solve: np.ndarray, astap_exe: str, fov_deg_h: float
             attempts.append(fov_deg_h)
         attempts.append(None)                                  # άγνωστο πεδίο
         tail = ""
+        last_rc = None
         for fov in attempts:
-            ok, rc, out = _run_astap_once(astap_exe, fp, fov, ra_deg, dec_deg, timeout, log)
+            ok, rc, out = _run_astap_once(astap_exe, fp, fov, ra_deg, dec_deg, timeout, log, cancel, tick)
+            last_rc = rc
             tail = out
             if log and out:
                 log(out[-700:])
@@ -190,6 +199,8 @@ def solve_with_astap(lum_for_solve: np.ndarray, astap_exe: str, fov_deg_h: float
             hint.append("Δεν βρέθηκε βάση αστεριών στον φάκελο του ASTAP — τρέξε τον installer της βάσης (π.χ. d50_star_database.exe).")
         if fov_deg_h:
             hint.append(f"Το ύψος πεδίου που δόθηκε ήταν {fov_deg_h:.2f}° (από την κλίμακα του βήματος 2) — πρέπει να είναι σωστό εντός ~10%.")
+        if last_rc in ASTAP_EXIT:
+            hint.insert(0, f"Κωδικός ASTAP {last_rc}: {ASTAP_EXIT[last_rc]}.")
         raise RuntimeError("Ο ASTAP δεν βρήκε λύση.\n" + "\n".join(hint) + ("\n\nΈξοδος ASTAP:\n" + tail[-600:] if tail else ""))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

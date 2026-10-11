@@ -418,7 +418,7 @@ class Renderer:
 
     # ------------------------------------------------------------------ render
     def render(self, target: moderngl.Framebuffer, out_size: tuple[int, int], pose, p: Params,
-               hdr_scale: float = 1.0):
+               hdr_scale: float = 1.0, fov_mul: float = 1.0):
         """Αποδίδει ένα καρέ στο target (π.χ. οθόνη ή offscreen FBO)."""
         if self.scene is None:
             target.use()
@@ -431,7 +431,7 @@ class Renderer:
         w, h = max(8, int(ow * hdr_scale)), max(8, int(oh * hdr_scale))
         self._ensure_targets(w, h)
         pos, right, up, fwd = pose
-        tx, ty = self.view_tans(w / h, p.fov_scale)
+        tx, ty = self.view_tans(w / h, p.fov_scale * fov_mul)
         px_scale = m["s"] * h / (2.0 * ty)
 
         self.hdr_fbo.use()
@@ -449,7 +449,7 @@ class Renderer:
         _set(pv, "uNoise", 3)
         # αυτόματη έκθεση (σαν φωτογραφική μηχανή): όσο η κάμερα πλησιάζει/βυθίζεται στο νεφέλωμα, η έκθεση πέφτει
         u = min(max((float(pos[2]) - (m["z0"] - 3.0 * m["E"])) / (3.35 * max(m["E"], 1e-9)), 0.0), 1.0)
-        auto = 1.0 / (1.0 + 1.5 * u * u * (3.0 - 2.0 * u))
+        auto = 1.0 / (1.0 + 0.45 * u * u * (3.0 - 2.0 * u))
         th1 = np.radians(max(p.detail_angle, 0.5))
         th0 = th1 / 6.0
         for n, v in (("uZ0", m["z0"]), ("uE", m["E"]), ("uInvDz", m["nz"] / m["E"]), ("uLimb", p.limb),
@@ -539,7 +539,7 @@ class Renderer:
         self.vao_tone.render(moderngl.TRIANGLE_STRIP)
 
     # ------------------------------------------------------------------ offscreen
-    def render_to_array(self, pose, p: Params, size: tuple[int, int], ssaa: int = 1) -> np.ndarray:
+    def render_to_array(self, pose, p: Params, size: tuple[int, int], ssaa: int = 1, fov_mul: float = 1.0) -> np.ndarray:
         """Επιστρέφει uint8 (h,w,3) RGB (γραμμή 0 = πάνω)."""
         import cv2
         ctx = self.ctx
@@ -548,7 +548,7 @@ class Renderer:
         tex = ctx.texture((W, Hh), 3, dtype="f1")
         fbo = ctx.framebuffer([tex])
         try:
-            self.render(fbo, (W, Hh), pose, p, hdr_scale=1.0)
+            self.render(fbo, (W, Hh), pose, p, hdr_scale=1.0, fov_mul=fov_mul)
             data = np.frombuffer(fbo.read(components=3), dtype=np.uint8).reshape(Hh, W, 3)[::-1]
             img = np.ascontiguousarray(data)
         finally:

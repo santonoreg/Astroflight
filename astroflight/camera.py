@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 import math
 import numpy as np
 
-FIELDS = ["az", "el", "roll", "logr", "tx", "ty", "tz", "yaw", "pitch"]
+FIELDS = ["az", "el", "roll", "logr", "tx", "ty", "tz", "yaw", "pitch", "logfov"]
 
 
 @dataclass
@@ -18,6 +18,7 @@ class CamState:
     tz: float = 0.0
     yaw: float = 0.0     # ελεύθερη στροφή βλέμματος (μοίρες, + = δεξιά)
     pitch: float = 0.0   # (μοίρες, + = πάνω)
+    logfov: float = 0.0  # ln(πολλαπλασιαστής οπτικού πεδίου): 0 = όπως στη φωτογραφία, >0 = ευρύτερο
 
     def vec(self):
         return np.array([getattr(self, f) for f in FIELDS], dtype=np.float64)
@@ -108,17 +109,54 @@ def _smooth(a: float, b: float, x: float) -> float:
     return t * t * (3 - 2 * t)
 
 
+def _dive_profile(a0: float, a_c: float, L_in: float, duration: float, n: int, t_start: float = 0.9,
+                  t_end: float = 1.6, v_in: float = 0.55) -> np.ndarray:
+    """Θέση της κάμερας στη διαδρομή: επιστρέφει την ΥΠΟΛΟΙΠΗ απόσταση a(t) από την είσοδο του νεφελώματος (a>0 = έξω,
+    a<0 = μέσα) για n ισαπέχοντα χρόνους στο [0, duration].
+
+    Ταχύτητα  v = k·√(a + a_c)  έξω (ούτε σταθερή ούτε εκθετική: τα αστέρια ξεχύνονται σε όλη τη διάρκεια της πτήσης
+    ενώ το νεφέλωμα μεγαλώνει ομαλά), και σταθερή (v_in × την ταχύτητα εισόδου) μέσα στα νέφη. Ομαλή εκκίνηση (t_start s)
+    και ομαλή προσγείωση στο τέλος (t_end s). Το k βρίσκεται με διχοτόμηση ώστε να φτάνει ακριβώς στο τέλος στον χρόνο."""
+    dt = duration / 4000.0
+    ts = np.arange(4001) * dt
+
+    def sim(k):
+        a = a0
+        out = np.empty_like(ts)
+        for i, t in enumerate(ts):
+            out[i] = a
+            v = k * math.sqrt(max(a, 0.0) + a_c) if a > 0 else k * math.sqrt(a_c) * v_in
+            f = _smooth(0.0, t_start, t) * (0.3 + 0.7 * _smooth(0.0, 1.0, (a + L_in) / max(0.2 * L_in, 1e-9)) if a < 0 else 1.0)
+            a -= v * f * dt
+            if a < -L_in:
+                a = -L_in
+        return out
+
+    lo, hi = 1e-4, 50.0
+    for _ in range(50):
+        k = 0.5 * (lo + hi)
+        traj = sim(k)
+        if traj[-1] > -L_in * 0.995:
+            lo = k
+        else:
+            hi = k
+    traj = sim(0.5 * (lo + hi))
+    return np.interp(np.linspace(0.0, duration, n), ts, traj)
+
+
 def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float = 0.0, fy: float = 0.0,
-              z_end: float | None = None, drift: float = 0.0, duration: float = 12.0, n_keys: int = 25,
-              frac_approach: float = 0.42) -> list[Keyframe]:
+              z_end: float | None = None, drift: float = 0.0, duration: float = 12.0, n_keys: int = 61,
+              frac_approach: float = 0.42, zoom_end: float = 2.5, fov_max_deg: float = 55.0) -> list[Keyframe]:
     """Ευθεία πτήση ΜΕΣΑ στο νεφέλωμα, από το σημείο λήψης προς ένα σημείο του κάδρου.
 
     fx, fy:  σημείο-στόχος ως ποσοστό του μισού πλάτους/ύψους της εικόνας (−1…1, 0 = κέντρο, +x δεξιά, +y πάνω)
     z_end:   βάθος (pc) όπου τελειώνει η πτήση (None = κέντρο του όγκου)
     drift:   ήπια πλευρική καμπύλη (σε πλάτη νεφελώματος), 0 = καθαρά ευθεία
     tx0, ty0: εφαπτομένη μισού πεδίου της εικόνας
-    frac_approach: ποσοστό του χρόνου για την προσέγγιση (εκθετική, μέσα από τα αστέρια) μέχρι την είσοδο στο νεφέλωμα·
-                   το υπόλοιπο ο χρόνος περνά ΜΕΣΑ στα νέφη με σχεδόν σταθερή ταχύτητα.
+    frac_approach: (δεν χρησιμοποιείται πλέον για το ρυθμό· διατηρείται για συμβατότητα)
+    zoom_end:    πόσες φορές «μεγαλύτερο» φαίνεται το νεφέλωμα όταν πλησιάζει την είσοδο σε σχέση με τη φωτογραφία
+                 (το οπτικό πεδίο ανοίγει ώστε το νεφέλωμα να μεγαλώνει ομαλά και όχι να βγαίνει απότομα από το κάδρο)
+    fov_max_deg: μέγιστο ΚΑΤΑΚΟΡΥΦΟ οπτικό πεδίο της κάμερας (μοίρες) – όσο μπαίνεις στα νέφη ανοίγει μέχρι εδώ.
 
     Η κάμερα ξεκινά ΑΚΡΙΒΩΣ από το σημείο λήψης (κοιτάζει +z) και κινείται σε ευθεία γραμμή προς τον στόχο.
     Παραμετροποίηση: az=el=0, pos = z_cam·(fx·tx0, fy·ty0, 1) = s·P_end, με R = z_far − z_cam (logr = ln(R/D0))."""
@@ -130,31 +168,31 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
     yaw_T = math.degrees(math.atan(fx * tx0))
     pitch_T = math.degrees(math.atan(fy * ty0))
     tz = (z_far - D0) / W0
-    # --- χαρακτηριστικές αποστάσεις
-    z_in = z0 - 0.06 * E                 # σημείο «ακριβώς πριν την είσοδο»
-    a0 = max(z_in, 1e-3)                 # απόσταση από το σημείο εισόδου στην αρχή
-    a1 = 0.06 * E * 0.0 + 0.02 * E       # τελική απόσταση της φάσης προσέγγισης (μικρή)
-    d_in = z_end - (z0 - a1)             # απόσταση που διανύεται μέσα στο νεφέλωμα
-    f1 = min(max(frac_approach, 0.1), 0.8)
-    keys = []
+    a_front = 0.02 * E                       # σταματά η «προσέγγιση» λίγο πριν το μέτωπο του όγκου
+    z_in = z0 - a_front
+    L_in = z_end - z_in
+    a_c = max(0.6 * E, 1e-3)                 # κλίμακα όπου η ταχύτητα αρχίζει να πέφτει
     N = n_keys
+    a_traj = _dive_profile(z_in, a_c, L_in, duration, N)
+    ln_ref = math.log(max(z_in, 1.0) / max(3.0 * E, 1e-3))
+    keys = []
     for i in range(N):
         x = i / (N - 1)
-        if x <= f1:
-            u = x / f1
-            a = a0 * (a1 / a0) ** u                       # εκθετική προσέγγιση προς το σημείο εισόδου
-            z_cam = z0 - a
-        else:
-            u = (x - f1) / (1.0 - f1)
-            e = 1.0 - (1.0 - u) ** 1.35                   # σχεδόν σταθερή ταχύτητα, ήπια επιβράδυνση στο τέλος
-            z_cam = (z0 - a1) + d_in * e
-        z_cam = min(max(z_cam, 0.0), z_end)
+        a = float(a_traj[i])
+        z_cam = min(max(z_in - a, 0.0), z_end)
         s_ = z_cam / z_end
         R = max(z_far - z_cam, 0.02 * W0)
         g = _smooth(0.0, 0.85, s_)
         bell = math.sin(math.pi * x) ** 2
+        # οπτικό πεδίο: το νεφέλωμα (κέντρο στο D0) φαίνεται zoom_end φορές μεγαλύτερο από τη φωτογραφία όταν φτάνει στην
+        # είσοδο· T = εφαπτομένη μισού κατακόρυφου πεδίου. Όταν μπαίνεις στα νέφη ανοίγει μέχρι το fov_max.
+        d_ref = max(D0 - z_cam, 0.15 * E)
+        tan_neb = ty0 * D0 / d_ref
+        prog = min(max(math.log(max(z_in, 1.0) / max(a + 3.0 * E * 0.0 + 1e-6, 1e-6)) / max(math.log(max(z_in, 1.0) / (3.0 * E)), 1e-6), 0.0), 1.0) if a > 0 else 1.0
+        S = math.exp(math.log(max(zoom_end, 1.0)) * _smooth(0.0, 1.0, prog))
+        T = min(max(tan_neb / S, ty0), math.tan(math.radians(fov_max_deg) / 2.0))
         keys.append(Keyframe(duration * x, CamState(
             az=0.0, el=0.0, roll=0.0, logr=math.log(R / D0),
             tx=s_ * P_end[0] / W0 + drift * bell, ty=s_ * P_end[1] / W0, tz=tz,
-            yaw=yaw_T * g, pitch=pitch_T * g)))
+            yaw=yaw_T * g, pitch=pitch_T * g, logfov=math.log(T / ty0))))
     return keys
