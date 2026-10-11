@@ -1,0 +1,12 @@
+# Launcher + προετοιμασία εικόνας
+numpy>=1.26
+astropy>=6.0
+astroquery>=0.4.7
+opencv-python-headless>=4.8
+tifffile>=2024.1
+PyQt6>=6.6
+# Για τα scripts (αν λείπουν, εγκαθίστανται αυτόματα την πρώτη φορά που θα ανοίξεις ένα script)
+PyQt6-WebEngine>=6.6
+plotly>=5.18
+matplotlib>=3.8
+kaleido>=0.2
