@@ -62,7 +62,7 @@ class Params:
     preview_scale: float = 0.6
     fov_scale: float = 1.0
     # --- βίντεο ---
-    duration: float = 12.0
+    duration: float = 30.0
     fps: int = 30
     out_width: int = 1920
     out_height: int = 1080
@@ -76,6 +76,8 @@ class Params:
     dive_drift: float = 0.0           # ήπια πλευρική καμπύλη (× πλάτος νεφελώματος)
     dive_zoom: float = 2.5            # πόσο μεγαλώνει το νεφέλωμα στο κάδρο κατά την προσέγγιση
     dive_fov_max: float = 55.0        # μέγιστο κατακόρυφο οπτικό πεδίο (°) μέσα στα νέφη
+    dive_zoom_rate: float = 0.25      # μέγιστη ταχύτητα ζουμ (ln ανά δευτερόλεπτο): μικρότερο = πιο αργό
+    video_crf: int = 16               # ποιότητα H.264 (μικρότερο = καλύτερη ποιότητα, μεγαλύτερο αρχείο)
 
     def to_dict(self):
         return asdict(self)

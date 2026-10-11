@@ -5,11 +5,12 @@ import os, time, traceback
 from PySide6.QtCore import Qt, QObject, QRunnable, Signal, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QCheckBox, QGroupBox,
-                               QDoubleSpinBox, QComboBox, QProgressBar, QFileDialog, QScrollArea, QFormLayout)
+                               QDoubleSpinBox, QComboBox, QProgressBar, QFileDialog, QScrollArea, QFormLayout, QSpinBox, QMessageBox)
 
 from .widgets import ParamRow
 from .pipeline import AutoOptions, Reporter, run_auto, STEPS
 from .runner import CancelToken, Cancelled
+from .config import Params
 from . import wcs_solve as ws
 from . import starnet as sn
 from . import gaia as gm
@@ -44,6 +45,65 @@ class AutoWorker(QRunnable):
             self.sig.cancelled.emit()
         except Exception as e:  # noqa
             self.sig.error.emit(f"{e}\n\x00\n{traceback.format_exc()[-1800:]}")
+
+
+class ExportSignals(QObject):
+    progress = Signal(float, str)
+    done = Signal(str)
+    error = Signal(str)
+    cancelled = Signal()
+
+
+class ExportWorker(QRunnable):
+    """Εξαγωγή βίντεο σε δικό της νήμα και δικό της OpenGL context (η εφαρμογή δεν «παγώνει», υπάρχει ETA και ακύρωση)."""
+
+    def __init__(self, scene, tone, keyframes, p: Params, out: str, png: bool, sig: ExportSignals, token: CancelToken, log):
+        super().__init__()
+        self.setAutoDelete(False)
+        self.scene, self.tone, self.keyframes, self.p, self.out, self.png = scene, tone, keyframes, p, out, png
+        self.sig, self.token, self.log = sig, token, log
+
+    def run(self):
+        ctx = r = None
+        try:
+            import moderngl
+            from .renderer import Renderer
+            from .camera import CameraPath
+            from . import export as ex
+            backend = os.environ.get("ASTROFLIGHT_BACKEND") or None
+            ctx = moderngl.create_standalone_context(backend=backend) if backend else moderngl.create_standalone_context()
+            r = Renderer(ctx)
+            r.set_scene(self.scene, self.tone)
+            path = CameraPath(self.keyframes, self.p.duration, self.p.ease)
+            n = max(2, int(round(self.p.duration * self.p.fps)))
+            t0 = time.time()
+
+            def prog(f):
+                el = time.time() - t0
+                done = f * n
+                eta = el / f * (1 - f) if f > 0.01 else 0.0
+                msg = f"Καρέ {int(done)}/{n}" + (f" – απομένουν περίπου {int(eta) // 60}:{int(eta) % 60:02d}" if f > 0.01 else "")
+                self.sig.progress.emit(float(f), msg)
+            ex.render_video(r, path, self.p, self.out, prog, lambda: self.token.cancelled, self.log, self.png)
+            if self.token.cancelled:
+                if not self.png and os.path.exists(self.out):
+                    try:
+                        os.remove(self.out)
+                    except OSError:
+                        pass
+                self.sig.cancelled.emit()
+            else:
+                self.sig.done.emit(self.out)
+        except Exception as e:  # noqa
+            self.sig.error.emit(f"{e}\n\x00\n{traceback.format_exc()[-1800:]}")
+        finally:
+            try:
+                if r is not None:
+                    r.release()
+                if ctx is not None:
+                    ctx.release()
+            except Exception:
+                pass
 
 
 def _help(text: str) -> QLabel:
@@ -98,7 +158,8 @@ class AutoPanel(QWidget):
         row.addWidget(edit, 1)
         b1 = QPushButton("…")
         b1.setToolTip("Επιλογή αρχείου")
-        b2 = QPushButton("Αυτόματη αναζήτηση")
+        b2 = QPushButton("Αναζήτηση")
+        b2.setToolTip("Ψάχνει το πρόγραμμα στις συνηθισμένες θέσεις εγκατάστασης")
         row.addWidget(b1)
         row.addWidget(b2)
         v.addLayout(row)
@@ -205,10 +266,72 @@ class AutoPanel(QWidget):
         self.btn_export = QPushButton("💾  Εξαγωγή βίντεο MP4…")
         self.btn_export.setMinimumHeight(40)
         self.btn_export.setVisible(False)
-        self.btn_export.clicked.connect(self.win.export_mp4)
+        self.btn_export.clicked.connect(self.export_video)
         row.addWidget(self.btn_view)
         row.addWidget(self.btn_export)
         lay.addLayout(row)
+
+        # --- εξαγωγή βίντεο
+        g, gl = self._group("🎬 Εξαγωγή βίντεο")
+        form = QFormLayout()
+        self.cb_res = QComboBox()
+        for name, wh in (("1280×720 (HD)", (1280, 720)), ("1920×1080 (Full HD)", (1920, 1080)), ("2560×1440 (2K)", (2560, 1440)),
+                         ("3840×2160 (4K)", (3840, 2160)), ("1080×1080 (τετράγωνο)", (1080, 1080)), ("1080×1920 (κάθετο, Reels/Shorts)", (1080, 1920))):
+            self.cb_res.addItem(name, wh)
+        self.cb_res.setCurrentIndex(1)
+        form.addRow("Ανάλυση:", self.cb_res)
+        self.sp_fps = QSpinBox()
+        self.sp_fps.setRange(12, 120)
+        self.sp_fps.setValue(self.proj.p.fps)
+        form.addRow("Καρέ ανά δευτερόλεπτο:", self.sp_fps)
+        self.cb_ssaa = QComboBox()
+        self.cb_ssaa.addItems(["1× – γρήγορο", "2× – καθαρότερο (≈4× αργό)", "3× – μέγιστο (≈9× αργό)"])
+        form.addRow("Εξομάλυνση (antialiasing):", self.cb_ssaa)
+        self.cb_q = QComboBox()
+        for name, crf in (("Υψηλή (μεγάλο αρχείο)", 16), ("Μέτρια", 21), ("Μικρό αρχείο", 26)):
+            self.cb_q.addItem(name, crf)
+        form.addRow("Ποιότητα συμπίεσης:", self.cb_q)
+        self.cb_fmt = QComboBox()
+        self.cb_fmt.addItem("MP4 (H.264)", False)
+        self.cb_fmt.addItem("Εικόνες PNG (για άλλο πρόγραμμα)", True)
+        form.addRow("Μορφή:", self.cb_fmt)
+        gl.addLayout(form)
+        self.exp_info = _help("")
+        gl.addWidget(self.exp_info)
+        gl.addWidget(_help("Η διάρκεια και η ταχύτητα του ζουμ ορίζονται στο «3 · Πτήση» παρακάτω (μεγαλύτερη διάρκεια = πιο αργό ζουμ). "
+                           "Η εξαγωγή τρέχει στο παρασκήνιο: μπορείς να κάνεις άλλα πράγματα και να την ακυρώσεις. "
+                           "Αν η κάρτα γραφικών σου έχει λίγη μνήμη, δοκίμασε μικρότερη ανάλυση ή «Ανάλυση όγκου» στο Βήμα-βήμα."))
+        row = QHBoxLayout()
+        self.btn_do_export = QPushButton("💾  Εξαγωγή βίντεο…")
+        self.btn_do_export.setMinimumHeight(42)
+        f2 = QFont()
+        f2.setBold(True)
+        self.btn_do_export.setFont(f2)
+        self.btn_do_export.clicked.connect(self.export_video)
+        self.btn_exp_cancel = QPushButton("■ Ακύρωση εξαγωγής")
+        self.btn_exp_cancel.setMinimumHeight(42)
+        self.btn_exp_cancel.setEnabled(False)
+        self.btn_exp_cancel.clicked.connect(self.cancel_export)
+        row.addWidget(self.btn_do_export, 3)
+        row.addWidget(self.btn_exp_cancel, 2)
+        gl.addLayout(row)
+        self.exp_bar = QProgressBar()
+        self.exp_bar.setRange(0, 1000)
+        gl.addWidget(self.exp_bar)
+        self.exp_lbl = QLabel("")
+        self.exp_lbl.setWordWrap(True)
+        self.exp_lbl.setTextFormat(Qt.RichText)
+        self.exp_lbl.setOpenExternalLinks(True)
+        gl.addWidget(self.exp_lbl)
+        for cb in (self.cb_res, self.cb_ssaa, self.cb_q, self.cb_fmt):
+            cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)     # να μην φουσκώνει το πάνελ
+            cb.setMinimumContentsLength(12)
+        self._export_widgets = [self.cb_res, self.sp_fps, self.cb_ssaa, self.cb_q, self.cb_fmt, self.btn_do_export]
+        for w_ in (self.cb_res, self.sp_fps, self.cb_ssaa):
+            (w_.currentIndexChanged if hasattr(w_, "currentIndexChanged") else w_.valueChanged).connect(lambda *_: self._update_export_info())
+        self.token_exp: CancelToken | None = None
+        lay.addWidget(g)
+        self.exp_group = g
 
 
         sep = QLabel("Ρυθμίσεις")
@@ -228,7 +351,7 @@ class AutoPanel(QWidget):
             "Χωρίς StarNet χρησιμοποιείται απλούστερη μέθοδος (αφήνει σκούρα σημάδια γύρω από φωτεινά αστέρια).",
             "starnet_path", sn.find_starnet, r"π.χ. C:\Program Files\StarNet2\bin\starnet2.exe",
             'Κατέβασέ το (starnet2, command line) από <a href="https://starnetastro.com/cli-tools/starnet/">starnetastro.com</a>.')
-        self.chk_gaia = QCheckBox("Gaia – πραγματικές αποστάσεις αστεριών (χρειάζεται internet)")
+        self.chk_gaia = QCheckBox("Gaia – πραγματικές αποστάσεις αστεριών")
         self.chk_gaia.setChecked(True)
         f = QFont()
         f.setBold(True)
@@ -247,12 +370,16 @@ class AutoPanel(QWidget):
         b_clr.setFixedWidth(30)
         b_clr.setToolTip("Αφαίρεση τοπικού αρχείου (θα χρησιμοποιηθεί internet)")
         b_clr.clicked.connect(lambda: self.set_gaia_file(None))
-        b_q = QPushButton("📋 Ερώτημα για το Gaia archive")
+        b_q = QPushButton("📋 Ερώτημα Gaia archive")
         b_q.setToolTip("Αντιγράφει το ερώτημα ADQL για τη δική σου περιοχή του ουρανού (χρειάζεται πρώτα επιτυχημένο plate solve)")
         b_q.clicked.connect(self.copy_gaia_query)
-        for b_ in (b_diag, b_file, b_clr, b_q):
-            grow.addWidget(b_)
+        grow.addWidget(b_diag)
+        grow.addWidget(b_q)
         gl.addLayout(grow)
+        grow2 = QHBoxLayout()
+        grow2.addWidget(b_file, 1)
+        grow2.addWidget(b_clr)
+        gl.addLayout(grow2)
         self.gaia_file_lbl = QLabel("")
         self.gaia_file_lbl.setWordWrap(True)
         gl.addWidget(self.gaia_file_lbl)
@@ -301,7 +428,9 @@ class AutoPanel(QWidget):
                            "αντικειμένου. Γνωστά ονόματα βρίσκονται και χωρίς internet."))
         form = QFormLayout()
         self.cb_stretch = QComboBox()
-        self.cb_stretch.addItems(["Αυτόματα", "Ναι – έχει ήδη τεντωθεί (τελική εικόνα)", "Όχι – γραμμικά δεδομένα (linear)"])
+        self.cb_stretch.addItems(["Αυτόματα", "Ναι – τελική εικόνα", "Όχι – γραμμικά (linear)"])
+        self.cb_stretch.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cb_stretch.setMinimumContentsLength(12)
         form.addRow("Η εικόνα είναι τεντωμένη;", self.cb_stretch)
         gl.addLayout(form)
         gl.addWidget(_help("Οι τελικές, επεξεργασμένες εικόνες είναι «τεντωμένες» (non-linear). Τα ακατέργαστα stacked δεδομένα είναι σκοτεινά και γραμμικά. "
@@ -327,7 +456,11 @@ class AutoPanel(QWidget):
         g, gl = self._group("3 · Πτήση (αλλάζει ζωντανά μετά την επεξεργασία)")
         self.prows = []
         for spec in (
-            ("duration", "Διάρκεια (s)", "f", 4, 120, 0.5, "Πόσο διαρκεί το βίντεο. Η ταχύτητα προσαρμόζεται αυτόματα."),
+            ("duration", "Διάρκεια (s)", "f", 6, 180, 1,
+             "Πόσο διαρκεί το βίντεο. Μεγαλύτερη διάρκεια = πιο αργή κίνηση και πιο αργό ζουμ (π.χ. 30 s ήρεμο, 60 s πολύ αργό)."),
+            ("dive_zoom_rate", "Μέγιστη ταχύτητα ζουμ", "f", 0.05, 1.0, 0.01,
+             "Πόσο γρήγορα επιτρέπεται να μεγαλώνει το νεφέλωμα στο κάδρο (ln ανά δευτερόλεπτο: 0.1 = πολύ αργά, 0.25 = ήρεμα, 0.5 = γρήγορα). "
+             "Αν η διάρκεια είναι πολύ μικρή για να τηρηθεί, το όριο αυξάνεται αυτόματα."),
             ("dive_zoom", "Zoom προσέγγισης (×)", "f", 1.0, 8.0, 0.1,
              "Πόσες φορές μεγαλύτερο φαίνεται το νεφέλωμα στο κάδρο όταν η κάμερα φτάνει στην είσοδό του. 1 = μένει όσο στη φωτογραφία (έντονη παράλλαξη, "
              "όλο το αντικείμενο φαίνεται), μεγάλο = το νεφέλωμα «ξεχειλίζει» από το κάδρο."),
@@ -354,6 +487,76 @@ class AutoPanel(QWidget):
         outer.addWidget(sa)
         self._inputs = [self.chk_astap, self.ed_astap, self.chk_starnet, self.ed_starnet, self.chk_gaia, self.sp_scale,
                         self.sp_focal, self.sp_pix, self.ed_object, self.cb_stretch, self.chk_dist, btn]
+
+    # ------------------------------------------------------------------ εξαγωγή βίντεο
+    def _update_export_info(self):
+        p = self.proj.p
+        n = int(round(p.duration * self.sp_fps.value()))
+        w, h = self.cb_res.currentData()
+        ss = self.cb_ssaa.currentIndex() + 1
+        self.exp_info.setText(f"{p.duration:.0f} s × {self.sp_fps.value()} fps = {n} καρέ στα {w}×{h}" + (f" με εξομάλυνση {ss}×" if ss > 1 else "")
+                              + ". Ο χρόνος εξαγωγής εξαρτάται από την κάρτα γραφικών· θα δεις ETA μόλις ξεκινήσει.")
+
+    def refresh_export_state(self):
+        ok = self.proj.scene is not None and self.token is None and self.token_exp is None and not self.win.busy
+        for w in self._export_widgets:
+            w.setEnabled(ok)
+        self.btn_export.setEnabled(ok)
+        self._update_export_info()
+
+    def export_video(self):
+        p = self.proj
+        if p.scene is None or not p.keyframes:
+            QMessageBox.information(self, "AstroFlight", "Πρώτα τρέξε την αυτόματη επεξεργασία ώστε να υπάρχει πτήση.")
+            return
+        png = bool(self.cb_fmt.currentData())
+        d = self.win.settings.value("last_export_dir", os.path.expanduser("~"))
+        if png:
+            out = QFileDialog.getExistingDirectory(self, "Φάκελος για τα καρέ PNG", d)
+        else:
+            out, _ = QFileDialog.getSaveFileName(self, "Αποθήκευση βίντεο", os.path.join(d, "astroflight.mp4"), "MP4 (*.mp4)")
+            if out and not out.lower().endswith(".mp4"):
+                out += ".mp4"
+        if not out:
+            return
+        self.win.settings.setValue("last_export_dir", out if png else os.path.dirname(out))
+        pp = Params(**p.p.to_dict())
+        pp.out_width, pp.out_height = self.cb_res.currentData()
+        pp.fps = int(self.sp_fps.value())
+        pp.ssaa = self.cb_ssaa.currentIndex() + 1
+        pp.video_crf = int(self.cb_q.currentData())
+        self.token_exp = CancelToken()
+        sig = ExportSignals()
+        self._exp_sig = sig
+        sig.progress.connect(lambda f, m: (self.exp_bar.setValue(int(f * 1000)), self.exp_lbl.setText(m)))
+        sig.done.connect(lambda path: self._export_finished(f"✔ Έτοιμο: <b>{path}</b>"))
+        sig.cancelled.connect(lambda: self._export_finished("Η εξαγωγή ακυρώθηκε."))
+        sig.error.connect(self._export_error)
+        self.exp_bar.setValue(0)
+        self.exp_lbl.setText("Εκκίνηση…")
+        self.btn_exp_cancel.setEnabled(True)
+        self.win._set_busy(True)
+        self.btn_exp_cancel.setEnabled(True)
+        self._exp_worker = ExportWorker(p.scene, p.tone, list(p.keyframes), pp, out, png, sig, self.token_exp, self.win.log_sig.emit)
+        self.win.pool.start(self._exp_worker)
+
+    def cancel_export(self):
+        if self.token_exp:
+            self.token_exp.cancel()
+            self.btn_exp_cancel.setEnabled(False)
+            self.exp_lbl.setText("Ακύρωση…")
+
+    def _export_finished(self, msg):
+        self.token_exp = None
+        self.btn_exp_cancel.setEnabled(False)
+        self.exp_lbl.setText(msg)
+        if msg.startswith("✔"):
+            self.exp_bar.setValue(1000)
+        self.win._set_busy(False)
+
+    def _export_error(self, msg):
+        self._export_finished('<span style="color:#e06060;"><b>✖ Η εξαγωγή απέτυχε:</b> ' + msg.split("\x00")[0].strip().replace("\n", "<br>") + "</span>")
+        self.win._log("ΣΦΑΛΜΑ εξαγωγής: " + msg.replace("\x00", ""))
 
     # ------------------------------------------------------------------ Gaia
     def set_gaia_file(self, path):
@@ -410,6 +613,9 @@ class AutoPanel(QWidget):
             w.setEnabled(not busy)
         self.btn_run.setEnabled(not busy)
         self.btn_cancel.setEnabled(busy and running)
+        if hasattr(self, "_export_widgets"):
+            self.refresh_export_state()
+            self.btn_exp_cancel.setEnabled(self.token_exp is not None)
 
     def open_image(self):
         d = self.win.settings.value("last_dir", "")
@@ -500,6 +706,7 @@ class AutoPanel(QWidget):
         self.btn_view.setVisible(True)
         self.btn_export.setVisible(True)
         self.win._auto_finished(summary)
+        self.refresh_export_state()
 
     def _on_error(self, msg):
         self._finish_run()

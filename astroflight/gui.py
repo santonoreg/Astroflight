@@ -200,7 +200,7 @@ BUILD_KEYS = ({s[0] for g in ("Βάθος νεφελώματος", "Όγκος (
 STAR_KEYS = {"stretched_input", "gamma", "star_sigma", "max_stars", "gaia_glim", "match_tol_px",
              "extra_enable", "extra_radius_deg", "extra_glim"}
 LAST = len(STEP_NAMES) - 1
-DIVE_KEYS = {"dive_zoom", "dive_fov_max", "dive_depth", "dive_auto_poi", "dive_fx", "dive_fy", "dive_drift", "duration"}
+DIVE_KEYS = {"dive_zoom_rate", "dive_zoom", "dive_fov_max", "dive_depth", "dive_auto_poi", "dive_fx", "dive_fy", "dive_drift", "duration"}
 
 
 class MainWindow(QMainWindow):
@@ -711,6 +711,8 @@ class MainWindow(QMainWindow):
                    "Πόσο μέσα στα νέφη τελειώνει η πτήση. Μικρή τιμή = μένεις στα εξωτερικά, φωτεινά στρώματα· μεγάλη = βαθιά μέσα (πιο σκοτεινά).")
         self._prow(gl, "dive_zoom", "Zoom προσέγγισης (×)", "f", 1.0, 8.0, 0.1,
                    "Πόσες φορές μεγαλύτερο φαίνεται το νεφέλωμα όταν η κάμερα φτάνει στην είσοδό του. 1 = όσο στη φωτογραφία, μεγάλο = «ξεχειλίζει» από το κάδρο.")
+        self._prow(gl, "dive_zoom_rate", "Μέγιστη ταχύτητα ζουμ", "f", 0.05, 1.0, 0.01,
+                   "Πόσο γρήγορα επιτρέπεται να μεγαλώνει το νεφέλωμα στο κάδρο (0.1 = πολύ αργά, 0.25 = ήρεμα, 0.5 = γρήγορα). Μικρότερο = πιο αργό ζουμ, αλλά και μεγαλύτερη ελάχιστη διάρκεια.")
         self._prow(gl, "dive_fov_max", "Μέγιστο οπτικό πεδίο (°)", "f", 20, 100, 1,
                    "Πόσο ανοίγει το κάδρο όταν η κάμερα μπαίνει μέσα στα νέφη (κατακόρυφη γωνία). Μεγαλύτερο = βλέπεις περισσότερα στρώματα γύρω σου.")
         self._prow(gl, "dive_drift", "Ήπια καμπύλη (× πλάτος)", "f", -0.3, 0.3, 0.01, "Πόσο ξεφεύγει πλάγια η διαδρομή στη μέση (σε πλάτη νεφελώματος). 0 = απολύτως ευθεία γραμμή.")
@@ -1099,6 +1101,7 @@ class MainWindow(QMainWindow):
         self._refresh_kf()
         self._show_depth(sc)
         self._update_nav()
+        self.auto.refresh_export_state()
         self._goto(4)
         self.statusBar().showMessage("Έτοιμο! Πειραματίσου με το ποντίκι· στο επόμενο βήμα ρύθμισε την εμφάνιση.")
 

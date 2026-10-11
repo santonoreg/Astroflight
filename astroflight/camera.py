@@ -110,30 +110,38 @@ def _smooth(a: float, b: float, x: float) -> float:
 
 
 def _dive_profile(a0: float, a_c: float, L_in: float, duration: float, n: int, t_start: float = 0.9,
-                  t_end: float = 1.6, v_in: float = 0.55) -> np.ndarray:
+                  t_end: float = 1.6, v_in: float = 0.55, zoom_rate: float = 0.25) -> np.ndarray:
     """Θέση της κάμερας στη διαδρομή: επιστρέφει την ΥΠΟΛΟΙΠΗ απόσταση a(t) από την είσοδο του νεφελώματος (a>0 = έξω,
     a<0 = μέσα) για n ισαπέχοντα χρόνους στο [0, duration].
 
-    Ταχύτητα  v = k·√(a + a_c)  έξω (ούτε σταθερή ούτε εκθετική: τα αστέρια ξεχύνονται σε όλη τη διάρκεια της πτήσης
+    Ταχύτητα  v = min(k·√(a + a_c), zoom_rate·(a + a_c))  έξω: το δεύτερο όριο εγγυάται ότι το νεφέλωμα δεν μεγαλώνει στο
+    κάδρο πιο γρήγορα από zoom_rate (σε ln ανά δευτερόλεπτο, π.χ. 0.25 = ×1.28 το δευτερόλεπτο). Αν η διάρκεια είναι πολύ
+    μικρή για να τηρηθεί, το όριο αυξάνεται αυτόματα. Το k είναι η «βασική» ταχύτητα  v = k·√(a + a_c) (ούτε σταθερή ούτε εκθετική: τα αστέρια ξεχύνονται σε όλη τη διάρκεια της πτήσης
     ενώ το νεφέλωμα μεγαλώνει ομαλά), και σταθερή (v_in × την ταχύτητα εισόδου) μέσα στα νέφη. Ομαλή εκκίνηση (t_start s)
     και ομαλή προσγείωση στο τέλος (t_end s). Το k βρίσκεται με διχοτόμηση ώστε να φτάνει ακριβώς στο τέλος στον χρόνο."""
     dt = duration / 4000.0
     ts = np.arange(4001) * dt
+
+    zr = max(zoom_rate, 1e-3)
 
     def sim(k):
         a = a0
         out = np.empty_like(ts)
         for i, t in enumerate(ts):
             out[i] = a
-            v = k * math.sqrt(max(a, 0.0) + a_c) if a > 0 else k * math.sqrt(a_c) * v_in
+            v = min(k * math.sqrt(max(a, 0.0) + a_c), zr * (max(a, 0.0) + a_c)) if a > 0 else min(k * math.sqrt(a_c), zr * a_c) * v_in
             f = _smooth(0.0, t_start, t) * (0.3 + 0.7 * _smooth(0.0, 1.0, (a + L_in) / max(0.2 * L_in, 1e-9)) if a < 0 else 1.0)
             a -= v * f * dt
             if a < -L_in:
                 a = -L_in
         return out
 
-    lo, hi = 1e-4, 50.0
-    for _ in range(50):
+    while True:                                  # αν δεν φτάνει στον χρόνο ακόμη και με πολύ μεγάλο k, χαλάρωσε το όριο ζουμ
+        if sim(1e3)[-1] <= -L_in * 0.995:
+            break
+        zr *= 1.25
+    lo, hi = 1e-4, 1e3
+    for _ in range(60):
         k = 0.5 * (lo + hi)
         traj = sim(k)
         if traj[-1] > -L_in * 0.995:
@@ -146,7 +154,8 @@ def _dive_profile(a0: float, a_c: float, L_in: float, duration: float, n: int, t
 
 def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float = 0.0, fy: float = 0.0,
               z_end: float | None = None, drift: float = 0.0, duration: float = 12.0, n_keys: int = 61,
-              frac_approach: float = 0.42, zoom_end: float = 2.5, fov_max_deg: float = 55.0) -> list[Keyframe]:
+              frac_approach: float = 0.42, zoom_end: float = 2.5, fov_max_deg: float = 55.0,
+              zoom_rate: float = 0.25) -> list[Keyframe]:
     """Ευθεία πτήση ΜΕΣΑ στο νεφέλωμα, από το σημείο λήψης προς ένα σημείο του κάδρου.
 
     fx, fy:  σημείο-στόχος ως ποσοστό του μισού πλάτους/ύψους της εικόνας (−1…1, 0 = κέντρο, +x δεξιά, +y πάνω)
@@ -173,7 +182,7 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
     L_in = z_end - z_in
     a_c = max(0.6 * E, 1e-3)                 # κλίμακα όπου η ταχύτητα αρχίζει να πέφτει
     N = n_keys
-    a_traj = _dive_profile(z_in, a_c, L_in, duration, N)
+    a_traj = _dive_profile(z_in, a_c, L_in, duration, N, zoom_rate=zoom_rate)
     ln_ref = math.log(max(z_in, 1.0) / max(3.0 * E, 1e-3))
     keys = []
     for i in range(N):

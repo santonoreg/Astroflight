@@ -28,9 +28,10 @@ def render_video(renderer, path_obj: CameraPath, p: Params, out_path: str, progr
         if exe is None:
             raise RuntimeError("Δεν βρέθηκε ffmpeg (pip install imageio-ffmpeg) – χρησιμοποίησε εξαγωγή PNG.")
         cmd = [exe, "-y", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{w}x{h}", "-pix_fmt", "rgb24",
-               "-r", str(int(p.fps)), "-i", "-", "-an", "-vcodec", "libx264", "-preset", "slow", "-crf", "15",
+               "-r", str(int(p.fps)), "-i", "-", "-an", "-vcodec", "libx264", "-preset", "slow", "-crf", str(int(p.video_crf)),
                "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_path]
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        kw = {"creationflags": 0x08000000} if os.name == "nt" else {}       # χωρίς αναβοσβήσιμο παραθύρου κονσόλας
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, **kw)
     else:
         os.makedirs(out_path, exist_ok=True)
     try:
