@@ -145,6 +145,7 @@ uniform float uNearR;
 uniform float uAmbZ0;
 uniform float uAmbZ1;
 uniform float uSubGain;
+uniform float uSubThresh;
 uniform float uFRef;
 uniform float uWhiteRef;
 in vec3 in_pos;
@@ -200,11 +201,11 @@ void main(){
     A *= smoothstep(uNearR, 4.0 * uNearR, sqrt(r2));
     A *= mix(1.0, smoothstep(uAmbZ0, uAmbZ1, uCam.z), isAmb);     // σβήνουν ομαλά καθώς περνούν δίπλα από την κάμερα
     float aS = alpha * uPxScale;
-    const float aMin = 0.6;
+    const float aMin = 0.5;
     if (aS < aMin) {
         // μικρότερο από pixel: φυσικά θα εξαφανιζόταν (A ∝ aS²). Σε «ουρανό» κρατάμε ορατά τα αστέρια με συμπίεση ~√(φωτεινότητας)
         float t = aS / aMin;
-        float Avis = uSubGain * uWhiteRef * sqrt(max(F / (3.0 * max(uFRef, 1e-12)) - 1.0, 0.0));   // αμυδρά αστέρια δεν φαίνονται
+        float Avis = uSubGain * uWhiteRef * sqrt(max(F / (uSubThresh * max(uFRef, 1e-12)) - 1.0, 0.0));   // αμυδρά αστέρια δεν φαίνονται
         A = max(A * t * t, Avis * (1.0 - t));
         aS = aMin;
     }
@@ -491,7 +492,7 @@ class Renderer:
                          ("uStarGain", p.star_gain), ("uSizeExp", p.star_size_exp), ("uPxScale", px_scale),
                          ("uSpikes", int(bool(p.spikes))), ("uSpikeAmt", p.spike_amount),
                          ("uHasVol", 1.0 if m.get("use_dust") else 0.0), ("uFCap", 60.0),
-                         ("uNearR", float(0.012 * m["W0"])), ("uSubGain", float(p.star_subpixel)), ("uAmbZ0", float(m["z0"] + 0.55 * m["E"])), ("uAmbZ1", float(m["z0"] + 1.05 * m["E"])), ("uFRef", float(m.get("fref", 1.0))),
+                         ("uNearR", float(0.012 * m["W0"])), ("uSubGain", float(p.star_subpixel)), ("uSubThresh", float(p.star_field_thresh)), ("uAmbZ0", float(m["z0"] + 0.55 * m["E"])), ("uAmbZ1", float(m["z0"] + 1.05 * m["E"])), ("uFRef", float(m.get("fref", 1.0))),
                          ("uWhiteRef", float(self.tone.get("white", 1.0)))):
                 _set(ps, n, v)
             _set(ps, "uTanP", (m["tx_p"], m["ty_p"]))

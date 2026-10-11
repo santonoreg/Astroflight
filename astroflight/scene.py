@@ -127,9 +127,21 @@ def build_scene(lin: np.ndarray, starless: np.ndarray, stars: Stars, dist_pc: np
             S += wk
     B = (1.0 / np.maximum(S, 1e-3)).astype(np.float32) if use_dust else np.ones_like(S)
     prog(0.35, "Όγκος εκπομπής")
+    # Το πίσω κέλυφος παίρνει ΜΟΝΟ χαμηλές συχνότητες (θολή εκδοχή), ώστε να μη «ηχούν» τα ίδια περιγράμματα/φιλαμέντα σε
+    # δεύτερο βάθος. Το άθροισμα front·(1-m) + soft·m ισούται ακριβώς με την εικόνα, άρα από το σημείο λήψης τίποτα δεν αλλάζει.
+    if mrr > 0:
+        soft = cv2.GaussianBlur(low_p, (0, 0), max(2.0, 0.04 * nxp))
+        soft = np.minimum(soft, low_p / mrr).astype(np.float32)
+        front = np.clip((low_p - mrr * soft) / (1.0 - mrr), 0.0, None).astype(np.float32)
+    else:
+        soft = front = low_p
     for kk in range(nz):
-        wk = wfun(kk) * B
-        vol[kk, ..., :3] = (low_p * wk[..., None]).astype(np.float16)
+        wf = ((1.0 - mrr) * prof(kk, center, sigma) / Wsum) * B
+        em = front * wf[..., None]
+        if mrr > 0:
+            wr = (mrr * prof(kk, center2, sigma) / Wsum2) * B
+            em = em + soft * wr[..., None]
+        vol[kk, ..., :3] = em.astype(np.float16)
 
     # --- detail (full-res) ---
     prog(0.55, "Detail υψηλής ανάλυσης")
