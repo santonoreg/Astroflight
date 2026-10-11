@@ -10,10 +10,11 @@ import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QImage, QPalette, QPixmap
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-                             QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+                             QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QComboBox,
                              QVBoxLayout, QWidget)
 
 from . import astap
+from .optics import CAMERAS
 from .prepare import Prepared, PrepareOptions, prepare, read_image
 from .runner import CancelToken, Cancelled
 
@@ -145,33 +146,50 @@ class MainWindow(QMainWindow):
 
         # --- 3. πληροφορίες
         g, gl = self._group("3 · Τι ξέρεις για την εικόνα (όλα προαιρετικά)")
+        gl.addWidget(_help("<b>Δεν χρειάζεται να ξέρεις την κλίμακα.</b> Η εφαρμογή δοκιμάζει μόνη της πολλές κλίμακες (από 0.7 έως 80 δευτερόλεπτα τόξου ανά pixel). "
+                           "Αν όμως της δώσεις τα οπτικά σου, ξεκινά από την ονομαστική κλίμακα και λύνει ταχύτερα. "
+                           "Σε mosaic ή εικόνα που έχει μικρύνει/μεγαλώσει, η πραγματική κλίμακα διαφέρει – δεν πειράζει."))
         form = QFormLayout()
+        self.cb_cam = QComboBox()
+        self.cb_cam.addItem("— δεν ξέρω / άλλη —", 0.0)
+        for name, um in CAMERAS.items():
+            self.cb_cam.addItem(f"{name}  ({um} µm)", um)
+        self.cb_cam.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.cb_cam.setMinimumContentsLength(14)
+        form.addRow("Κάμερα:", self.cb_cam)
+        self.sp_pix = QDoubleSpinBox()
+        self.sp_pix.setRange(0.0, 50.0)
+        self.sp_pix.setDecimals(2)
+        self.sp_pix.setSpecialValueText("άγνωστο")
+        self.sp_pix.setSuffix(" µm")
+        form.addRow("Μέγεθος pixel:", self.sp_pix)
+        self.sp_focal = QDoubleSpinBox()
+        self.sp_focal.setRange(0.0, 20000.0)
+        self.sp_focal.setSpecialValueText("άγνωστη")
+        self.sp_focal.setSuffix(" mm")
+        form.addRow("Εστιακή απόσταση:", self.sp_focal)
+        self.sp_bin = QSpinBox()
+        self.sp_bin.setRange(1, 6)
+        form.addRow("Binning:", self.sp_bin)
+        self.lbl_nominal = QLabel("")
+        form.addRow("Ονομαστική κλίμακα:", self.lbl_nominal)
         self.sp_scale = QDoubleSpinBox()
         self.sp_scale.setRange(0.0, 600.0)
         self.sp_scale.setDecimals(3)
         self.sp_scale.setSpecialValueText("άγνωστη")
         self.sp_scale.setSuffix(' "/px')
-        form.addRow("Κλίμακα εικόνας:", self.sp_scale)
+        form.addRow("Κλίμακα αν την ξέρεις:", self.sp_scale)
         gl.addLayout(form)
-        gl.addWidget(_help("Πόσα δευτερόλεπτα τόξου (\") καλύπτει κάθε pixel. Αν τη ξέρεις, η λύση βγαίνει πολύ πιο γρήγορα και πιο σίγουρα· "
-                           "αν είναι «άγνωστη» ο ASTAP θα την ανακαλύψει μόνος του (αργότερα)."))
-        opt = QHBoxLayout()
-        self.sp_focal = QDoubleSpinBox()
-        self.sp_focal.setRange(1, 20000)
-        self.sp_focal.setValue(500)
-        self.sp_focal.setSuffix(" mm")
-        self.sp_pix = QDoubleSpinBox()
-        self.sp_pix.setRange(0.5, 50)
-        self.sp_pix.setDecimals(2)
-        self.sp_pix.setValue(3.76)
-        self.sp_pix.setSuffix(" µm")
-        bc = QPushButton("Υπολογισμός")
-        bc.setToolTip("Κλίμακα = 206.265 × μέγεθος pixel (µm) ÷ εστιακή απόσταση (mm)")
-        bc.clicked.connect(lambda: self.sp_scale.setValue(206.265 * self.sp_pix.value() / self.sp_focal.value()))
-        for x in (QLabel("Εστιακή:"), self.sp_focal, QLabel("Pixel:"), self.sp_pix, bc):
-            opt.addWidget(x)
-        gl.addLayout(opt)
-        gl.addWidget(_help("Από τα οπτικά σου: κλίμακα = 206.265 × μέγεθος pixel (µm) ÷ εστιακή (mm). Αν έκανες binning ή μίκρυνες την εικόνα, πολλαπλασίασε ανάλογα."))
+        gl.addWidget(_help("Ονομαστική κλίμακα = 206.265 × μέγεθος pixel (µm) × binning ÷ εστιακή (mm), π.χ. Atik 383L+ με 300 mm: 3.71″/px. "
+                           "Ισχύει αν η εικόνα είναι στο αρχικό μέγεθος. Το «Κλίμακα αν την ξέρεις» υπερισχύει της ονομαστικής."))
+        self.cb_cam.currentIndexChanged.connect(lambda _i: (self.sp_pix.setValue(self.cb_cam.currentData() or self.sp_pix.value()), self._nominal()))
+        for sp in (self.sp_pix, self.sp_focal, self.sp_bin):
+            sp.valueChanged.connect(lambda _v: self._nominal())
+        # θυμάται τα οπτικά από τη φορά που τα έδωσες
+        self.sp_pix.setValue(float(self.settings.value("pixel_um", 0.0)))
+        self.sp_focal.setValue(float(self.settings.value("focal_mm", 0.0)))
+        self.sp_bin.setValue(int(self.settings.value("binning", 1)))
+        self._nominal()
         form = QFormLayout()
         self.ed_object = QLineEdit()
         self.ed_object.setPlaceholderText("π.χ. Rosette Nebula, M42, NGC 7000")
@@ -179,6 +197,11 @@ class MainWindow(QMainWindow):
         gl.addLayout(form)
         gl.addWidget(_help("Βοηθά τον ASTAP να ξέρει πού να ψάξει (ταχύτερη λύση) και δίνει το όνομα του στόχου στο CosmicView 3D, "
                            "ώστε να βρει σωστά την απόσταση. Η αναζήτηση ονόματος χρειάζεται internet (SIMBAD)."))
+        self.chk_approx = QCheckBox("Αν αποτύχει ο ASTAP, χρησιμοποίησε προσεγγιστική λύση (όνομα αντικειμένου + κλίμακα)")
+        self.chk_approx.setChecked(True)
+        gl.addWidget(self.chk_approx)
+        gl.addWidget(_help("Εφεδρική λύση: κέντρο από το όνομα που έγραψες, κλίμακα από τα οπτικά σου, βορράς πάνω. Αρκεί για το CosmicView 3D (πού κοιτάζει η φωτογραφία)· "
+                           "οι θέσεις αντικειμένων στο CosmicDepth 3D μπορεί να μην ταιριάζουν ακριβώς. Σημαίνεται ΠΑΝΤΑ ως προσεγγιστική στο αποτέλεσμα."))
         self.chk_force = QCheckBox("Νέο plate solve (αγνόησε την αποθηκευμένη λύση)")
         gl.addWidget(self.chk_force)
         gl.addWidget(_help("Για την ίδια εικόνα η λύση αποθηκεύεται και δεν ξαναγίνεται. Τσέκαρέ το αν άλλαξες κλίμακα/όνομα ή η λύση βγήκε λάθος."))
@@ -259,6 +282,15 @@ class MainWindow(QMainWindow):
             self.astap_status.setText("✖ δεν βρέθηκε – χωρίς ASTAP δουλεύουν μόνο FITS που έχουν ήδη αστρομετρική λύση")
             self.astap_status.setStyleSheet("color:#e06060;")
 
+    def _nominal(self):
+        from .optics import nominal_scale
+        px, fl = self.sp_pix.value(), self.sp_focal.value()
+        if px > 0 and fl > 0:
+            n = nominal_scale(px, fl, self.sp_bin.value())
+            self.lbl_nominal.setText(f"{n:.2f} \"/px")
+        else:
+            self.lbl_nominal.setText("— (δώσε κάμερα και εστιακή)")
+
     def _browse_astap(self):
         p, _ = QFileDialog.getOpenFileName(self, "ASTAP εκτελέσιμο", os.path.dirname(self.astap_edit.text()) if self.astap_edit.text() else "")
         if p:
@@ -303,8 +335,12 @@ class MainWindow(QMainWindow):
         if not self.image_path:
             self.status.setText("⚠ Διάλεξε πρώτα μια εικόνα.")
             return
+        self.settings.setValue("pixel_um", self.sp_pix.value())
+        self.settings.setValue("focal_mm", self.sp_focal.value())
+        self.settings.setValue("binning", self.sp_bin.value())
         opts = PrepareOptions(astap_path=self.astap_edit.text().strip() or None, scale_arcsec=self.sp_scale.value() or None,
-                              object_name=self.ed_object.text(), force=self.chk_force.isChecked())
+                              pixel_um=self.sp_pix.value() or None, focal_mm=self.sp_focal.value() or None, binning=float(self.sp_bin.value()),
+                              allow_approx=self.chk_approx.isChecked(), object_name=self.ed_object.text(), force=self.chk_force.isChecked())
         self.token = CancelToken()
         sig = self._sig = _Sig()
         sig.progress.connect(lambda f, m: (self.bar.setValue(int(f * 1000)), self.status.setText(m)))

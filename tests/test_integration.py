@@ -63,13 +63,48 @@ try:
     prepare(src, PrepareOptions(astap_path=FAKE, force=True), workdir=os.path.join(tmp, "w2"))
     check("σφάλμα χωρίς λύση", False)
 except RuntimeError as e:
-    check("σφάλμα χωρίς λύση εξηγείται", "Κωδικός ASTAP 1" in str(e), str(e).splitlines()[1][:70])
+    check("σφάλμα χωρίς λύση εξηγείται", "κωδικός astap 1" in str(e).lower() and "δοκιμές" in str(e), str(e).splitlines()[1][:70])
 os.environ.pop("FAKE_ASTAP")
 try:
     prepare(src, PrepareOptions(astap_path="/nonexistent"), workdir=os.path.join(tmp, "w3"))
     check("σφάλμα χωρίς ASTAP", False)
 except RuntimeError as e:
     check("σφάλμα χωρίς ASTAP εξηγείται", "ASTAP" in str(e))
+
+# 3β. άγνωστη κλίμακα: ο ASTAP λύνει μόνο με σωστή υπόδειξη πεδίου → η σκάλα κλιμάκων πρέπει να τη βρει
+os.environ["FAKE_ASTAP"] = "fovonly"
+t0 = time.time()
+r_l = prepare(src, PrepareOptions(astap_path=FAKE, force=True, allow_approx=False), log=logs.append, workdir=os.path.join(tmp, "w5"))
+check("άγνωστη κλίμακα: λύνεται με σκάλα κλιμάκων", r_l.solved_by == "astap" and abs(r_l.scale_arcsec - 3.5) < 0.05, f"{time.time() - t0:.0f}s")
+# με λάθος ονομαστική κλίμακα (π.χ. mosaic με resample) πάλι πρέπει να λυθεί
+r_n = prepare(src, PrepareOptions(astap_path=FAKE, force=True, allow_approx=False, pixel_um=5.4, focal_mm=300), log=logs.append,
+              workdir=os.path.join(tmp, "w6"))
+check("λάθος ονομαστική κλίμακα (3.71 αντί 3.5): λύνεται", r_n.solved_by == "astap", f"{r_n.scale_arcsec:.2f}")
+os.environ.pop("FAKE_ASTAP")
+
+# 3γ. μεγάλο mosaic με μαύρα περιθώρια: μικραίνει πριν σταλεί και η λύση επιστρέφει στο αρχικό μέγεθος
+Hb, Wb = 3000, 4000
+big = np.zeros((Hb, Wb, 3), np.uint16)
+big[200:2800, 300:3700] = (np.clip(img[0:1, 0:1] * 0 + 0.1, 0, 1) * 65535).astype(np.uint16)
+big[1000:1010, 1000:1010] = 60000
+bigsrc = os.path.join(tmp, "mosaic.tif")
+tifffile.imwrite(bigsrc, big, photometric="rgb")
+r_b = prepare(bigsrc, PrepareOptions(astap_path=FAKE, allow_approx=False), log=logs.append, workdir=os.path.join(tmp, "w7"))
+f_ds = 2800.0 / 4000.0
+check("mosaic: λύση επιστρέφει στην αρχική διάσταση", r_b.width == Wb and r_b.height == Hb and abs(r_b.scale_arcsec - 3.5 * f_ds) < 0.02,
+      f"{r_b.scale_arcsec:.3f} (αναμενόμενο {3.5 * f_ds:.3f})")
+check("mosaic: το κέντρο της λύσης μένει στο κέντρο", abs(r_b.ra_deg - 97.98) < 0.01 and abs(r_b.dec_deg - 4.93) < 0.01, f"{r_b.ra_deg:.3f} {r_b.dec_deg:.3f}")
+
+# 3δ. αποτυχία ASTAP → προσεγγιστική λύση από όνομα (συντεταγμένες) και κλίμακα
+os.environ["FAKE_ASTAP"] = "nosolution"
+r_a = prepare(src, PrepareOptions(astap_path=FAKE, force=True, ra_deg=97.98, dec_deg=4.93, object_name="Rosette", scale_arcsec=3.5),
+              log=logs.append, workdir=os.path.join(tmp, "w8"))
+check("προσεγγιστική λύση όταν αποτύχει ο ASTAP", r_a.solved_by == "approx" and any("ΠΡΟΣΕΓΓΙΣΤΙΚΗ" in w for w in r_a.warnings) and abs(r_a.scale_arcsec - 3.5) < 0.01,
+      r_a.summary()[:60])
+check("η προσεγγιστική λύση σημαίνεται στο FITS", fits.getheader(r_a.fits_path).get("APPROX") is True and fits.getheader(r_a.fits_path)["PLTSOLVD"] is False)
+r_a2 = prepare(src, PrepareOptions(astap_path=FAKE, ra_deg=97.98, dec_deg=4.93, object_name="Rosette", scale_arcsec=3.5), workdir=os.path.join(tmp, "w8"))
+check("η προσεγγιστική λύση δεν παρουσιάζεται ως κανονική όταν ξαναχρησιμοποιείται", r_a2.solved_by == "approx" and r_a2.warnings)
+os.environ.pop("FAKE_ASTAP")
 
 # 4. ακύρωση
 os.environ["FAKE_ASTAP"] = "slow"

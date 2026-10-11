@@ -15,13 +15,18 @@ from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 
 from . import astap
+from .optics import nominal_scale
 from .runner import CancelToken
 
 
 @dataclass
 class PrepareOptions:
     astap_path: str | None = None
-    scale_arcsec: float | None = None        # arcsec/pixel της εικόνας (προαιρετικό: επιταχύνει και σιγουρεύει τη λύση)
+    scale_arcsec: float | None = None        # arcsec/pixel της εικόνας ΑΝ την ξέρεις (προαιρετικό)
+    pixel_um: float | None = None            # μέγεθος pixel κάμερας (µm) – για ονομαστική κλίμακα από τα οπτικά
+    focal_mm: float | None = None            # εστιακή απόσταση (mm)
+    binning: float = 1.0
+    allow_approx: bool = True                # αν αποτύχει ο ASTAP: προσεγγιστική λύση από όνομα αντικειμένου + κλίμακα (βορράς πάνω)
     object_name: str = ""                    # προαιρετικό: βοηθά το plate solve και δίνει το OBJECT στα scripts
     ra_deg: float | None = None
     dec_deg: float | None = None
@@ -38,7 +43,7 @@ class Prepared:
     height: int
     channels: int
     header: fits.Header
-    solved_by: str                           # "file" (είχε ήδη WCS) | "astap" | "cache"
+    solved_by: str                           # "file" (είχε ήδη WCS) | "astap" | "cache" | "approx" (προσεγγιστική)
     object_name: str = ""
     ra_deg: float = 0.0
     dec_deg: float = 0.0
@@ -48,7 +53,8 @@ class Prepared:
     warnings: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        how = {"file": "η εικόνα είχε ήδη αστρομετρία", "astap": "plate solve με ASTAP", "cache": "από προηγούμενη προετοιμασία"}[self.solved_by]
+        how = {"file": "η εικόνα είχε ήδη αστρομετρία", "astap": "plate solve με ASTAP", "cache": "από προηγούμενη προετοιμασία",
+               "approx": "ΠΡΟΣΕΓΓΙΣΤΙΚΗ λύση από όνομα αντικειμένου και κλίμακα"}[self.solved_by]
         return (f"{self.width}×{self.height}px, RA {self.ra_deg:.4f}° Dec {self.dec_deg:+.4f}°, κλίμακα {self.scale_arcsec:.2f}\"/px, "
                 f"πεδίο {self.fov_deg[0]:.2f}°×{self.fov_deg[1]:.2f}° ({how})")
 
@@ -144,6 +150,19 @@ def _ascii(text: str) -> str:
     return "".join(ch if 32 <= ord(ch) < 127 else "?" for ch in text)
 
 
+def _approx_header(ra: float, dec: float, scale_arcsec: float, W: int, H: int) -> fits.Header:
+    """Προσεγγιστικό WCS (TAN): κέντρο στο (ra, dec), κλίμακα scale, βορράς πάνω, ανατολή αριστερά, χωρίς περιστροφή."""
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    w.wcs.crval = [ra, dec]
+    w.wcs.crpix = [(W + 1) / 2.0, (H + 1) / 2.0]
+    s = scale_arcsec / 3600.0
+    w.wcs.cd = [[-s, 0.0], [0.0, s]]
+    h = w.to_header()
+    h["APPROX"] = (True, "Approximate WCS: not from a plate solve")
+    return h
+
+
 def _wcs_cards(h: fits.Header) -> fits.Header:
     skip = ("SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "EXTEND", "COMMENT", "HISTORY", "END")
     out = fits.Header()
@@ -160,7 +179,8 @@ def _wcs_cards(h: fits.Header) -> fits.Header:
 def _sig(path: str, opts: PrepareOptions) -> dict:
     st = os.stat(path)
     return dict(path=os.path.abspath(path), size=st.st_size, mtime=int(st.st_mtime), scale=opts.scale_arcsec,
-                obj=opts.object_name.strip(), ra=opts.ra_deg, dec=opts.dec_deg)
+                obj=opts.object_name.strip(), ra=opts.ra_deg, dec=opts.dec_deg, px=opts.pixel_um, focal=opts.focal_mm,
+                bin=opts.binning, approx=opts.allow_approx)
 
 
 def prepare(path: str, opts: PrepareOptions, progress=None, log=None, cancel: CancelToken | None = None,
@@ -199,12 +219,16 @@ def prepare(path: str, opts: PrepareOptions, progress=None, log=None, cancel: Ca
     if not opts.force and os.path.isfile(out_fits) and os.path.isfile(meta_path):
         try:
             with open(meta_path, "r", encoding="utf-8") as f:
-                if json.load(f) == sig:
-                    hdr = fits.getheader(out_fits)
-                    if _has_wcs(hdr):
-                        log("Βρέθηκε αποθηκευμένη λύση για αυτή την εικόνα – δεν χρειάζεται νέο plate solve.")
-                        prog(1.0, "Έτοιμο (από προηγούμενη προετοιμασία)")
-                        return finish(hdr, "cache")
+                meta = json.load(f)
+            if meta.get("sig") == sig:
+                hdr = fits.getheader(out_fits)
+                if _has_wcs(hdr):
+                    approx = meta.get("by") == "approx"
+                    log("Βρέθηκε αποθηκευμένη λύση για αυτή την εικόνα – δεν χρειάζεται νέο plate solve.")
+                    if approx:
+                        warnings.append("Η αποθηκευμένη λύση είναι ΠΡΟΣΕΓΓΙΣΤΙΚΗ (όνομα αντικειμένου + κλίμακα, βορράς πάνω), όχι plate solve.")
+                    prog(1.0, "Έτοιμο (από προηγούμενη προετοιμασία)")
+                    return finish(hdr, "approx" if approx else "cache")
         except Exception as e:  # noqa
             log(f"Η αποθηκευμένη λύση δεν χρησιμοποιήθηκε ({e}).")
 
@@ -229,14 +253,31 @@ def prepare(path: str, opts: PrepareOptions, progress=None, log=None, cancel: Ca
                                "Εγκατάστησε τον ASTAP + μία βάση αστεριών (D50 ή D20) από https://hnsky.org/astap.htm και δείξε τη διαδρομή του, "
                                "ή δώσε FITS που έχει ήδη λυθεί (π.χ. από το Siril).")
         lum = rgb.mean(axis=0)
-        fov = H * opts.scale_arcsec / 3600.0 if opts.scale_arcsec else None
+        hints: list[float] = []
+        if opts.scale_arcsec:
+            hints.append(float(opts.scale_arcsec))
+        nominal = None
+        if opts.pixel_um and opts.focal_mm:
+            nominal = nominal_scale(opts.pixel_um, opts.focal_mm, opts.binning or 1.0)
+            log(f"Ονομαστική κλίμακα από τα οπτικά: {nominal:.2f}\"/px (αν η εικόνα είναι στο αρχικό μέγεθος – σε mosaic/resample διαφέρει).")
+            hints += [nominal, nominal * 2, nominal * 3, nominal * 0.5]
+        hint_scale = opts.scale_arcsec or nominal
 
-        def tick(el, last):
-            f = 0.1 + 0.7 * (1.0 - math.exp(-el / 45.0))
-            prog(f, f"ASTAP: αναζήτηση λύσης… {el:.0f} s")
+        def sprog(f, m=""):
+            prog(0.1 + 0.75 * f, m)
         prog(0.1, "ASTAP: αναζήτηση λύσης…")
-        solved_hdr = astap.solve(lum, exe, fov, ra_h, dec_h, timeout=opts.timeout, log=log, cancel=cancel, tick=tick)
-        by = "astap"
+        try:
+            solved_hdr, info = astap.solve_auto(lum, exe, hints, ra_h, dec_h, log=log, cancel=cancel, progress=sprog)
+            by = "astap"
+            log(f"Plate solve: {info['label']} ({info['tries']} δοκιμές, {info['seconds']:.0f} s)")
+        except RuntimeError as e:
+            if not (opts.allow_approx and ra_h is not None and hint_scale):
+                raise
+            warnings.append(f"Ο ASTAP δεν βρήκε λύση – χρησιμοποιήθηκε ΠΡΟΣΕΓΓΙΣΤΙΚΗ λύση: κέντρο = «{obj or 'συντεταγμένες χρήστη'}», "
+                            f"κλίμακα {hint_scale:.2f}\"/px, βορράς πάνω. Οι θέσεις αντικειμένων μπορεί να μην ταιριάζουν ακριβώς με τη φωτογραφία.")
+            log("⚠ " + warnings[-1])
+            log(str(e).splitlines()[0])
+            solved_hdr, by = _approx_header(ra_h, dec_h, hint_scale, W, H), "approx"
     cancel.check()
 
     # --- 3. αποθήκευση FITS για τα scripts
@@ -249,11 +290,11 @@ def prepare(path: str, opts: PrepareOptions, progress=None, log=None, cancel: Ca
         hdr["OBJECT"] = (_ascii(obj), "Object name (from user)")
     elif ra_h is not None and not hdr.get("OBJECT"):
         pass
-    hdr["PLTSOLVD"] = (True, "Plate solved")
+    hdr["PLTSOLVD"] = (by != "approx", "Plate solved")
     hdr["CREATOR"] = ("Cosmic3D launcher", "Prepared for CosmicView/CosmicDepth 3D")
     fits.PrimaryHDU(rgb.astype(np.float32), header=hdr).writeto(out_fits, overwrite=True)
     with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(sig, f)
+        json.dump(dict(sig=sig, by=by), f)
     res = finish(fits.getheader(out_fits), by)
     log("Έτοιμο: " + res.summary())
     prog(1.0, "Έτοιμο")

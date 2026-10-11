@@ -47,7 +47,8 @@ def load_script(kind: str):
 
 def cli_prepare(args) -> int:
     from cosmic3d.prepare import PrepareOptions, prepare
-    opts = PrepareOptions(astap_path=args.astap, scale_arcsec=args.scale, object_name=args.object or "", force=args.force)
+    opts = PrepareOptions(astap_path=args.astap, scale_arcsec=args.scale, pixel_um=args.pixel, focal_mm=args.focal, binning=args.binning,
+                          allow_approx=not args.no_approx, object_name=args.object or "", force=args.force)
     try:
         r = prepare(args.image, opts, progress=lambda f, m="": print(f"[{f * 100:3.0f}%] {m}", flush=True), log=lambda m: print("   ", m))
     except Exception as e:  # noqa
@@ -66,6 +67,10 @@ def main(argv=None) -> int:
     ap.add_argument("--open", choices=["view", "depth", "both"], help="άνοιγμα script μετά την προετοιμασία")
     ap.add_argument("--astap", help="διαδρομή του ASTAP")
     ap.add_argument("--scale", type=float, help="κλίμακα εικόνας σε arcsec/pixel (προαιρετικό)")
+    ap.add_argument("--pixel", type=float, help="μέγεθος pixel κάμερας σε µm (π.χ. 5.4 για Atik 383L+)")
+    ap.add_argument("--focal", type=float, help="εστιακή απόσταση σε mm")
+    ap.add_argument("--binning", type=float, default=1.0)
+    ap.add_argument("--no-approx", action="store_true", help="χωρίς εφεδρική προσεγγιστική λύση αν αποτύχει ο ASTAP")
     ap.add_argument("--object", help="όνομα αντικειμένου, π.χ. 'Rosette Nebula' (προαιρετικό)")
     ap.add_argument("--force", action="store_true", help="νέο plate solve ακόμη κι αν υπάρχει αποθηκευμένη λύση")
     ap.add_argument("--prepare-only", action="store_true", help="μόνο προετοιμασία, χωρίς γραφικά")

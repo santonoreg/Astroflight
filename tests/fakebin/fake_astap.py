@@ -11,6 +11,11 @@ W, H = h["NAXIS1"], h["NAXIS2"]
 print("ASTAP fake: solving", f, W, H, flush=True)
 mode = os.environ.get("FAKE_ASTAP", "ok")
 time.sleep(1.2)
+if mode == "fovonly":                       # λύνει ΜΟΝΟ αν η υπόδειξη πεδίου είναι ±20% σωστή (όχι τυφλά)
+    fov = float(a[a.index("-fov") + 1]) if "-fov" in a else 0.0
+    true_fov = H * 3.5 / 3600.0            # το ψεύτικο WCS έχει πάντα 3.5"/px ως προς το αρχείο που στέλνεται
+    if fov == 0.0 or abs(fov / true_fov - 1.0) > 0.2:
+        print("No solution", flush=True); sys.exit(1)
 if mode == "slow":
     time.sleep(60)
 if mode == "nosolution":
