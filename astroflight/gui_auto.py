@@ -12,6 +12,7 @@ from .pipeline import AutoOptions, Reporter, run_auto, STEPS
 from .runner import CancelToken, Cancelled
 from . import wcs_solve as ws
 from . import starnet as sn
+from . import gaia as gm
 
 HELP_CSS = "color:#8a90a6; font-size:11px;"
 ICONS = {"pending": ("○", "#6b7080"), "running": ("◔", "#6aa0ff"), "ok": ("✔", "#4cc27a"), "warn": ("⚠", "#e0b040"),
@@ -235,6 +236,29 @@ class AutoPanel(QWidget):
         gl.addWidget(self.chk_gaia)
         gl.addWidget(_help("Κατεβάζει από τον κατάλογο Gaia DR3 τις μετρημένες αποστάσεις των αστεριών του πεδίου σου. "
                            "Απαιτεί επιτυχημένο plate solve. Αν δεν υπάρχει internet χρησιμοποιούνται εύλογες συνθετικές αποστάσεις."))
+        grow = QHBoxLayout()
+        b_diag = QPushButton("🔍 Έλεγχος σύνδεσης")
+        b_diag.setToolTip("Δοκιμάζει αν φτάνει η εφαρμογή στους servers του Gaia (ESA, ARI Heidelberg, VizieR) και εξηγεί τι δεν δουλεύει")
+        b_diag.clicked.connect(self.check_gaia_connection)
+        b_file = QPushButton("📄 Τοπικό αρχείο Gaia…")
+        b_file.setToolTip("Φόρτωσε CSV/FITS/VOTable που κατέβασες εσύ από το Gaia archive (δεν χρειάζεται internet στην εφαρμογή)")
+        b_file.clicked.connect(self.pick_gaia_file)
+        b_clr = QPushButton("✖")
+        b_clr.setFixedWidth(30)
+        b_clr.setToolTip("Αφαίρεση τοπικού αρχείου (θα χρησιμοποιηθεί internet)")
+        b_clr.clicked.connect(lambda: self.set_gaia_file(None))
+        b_q = QPushButton("📋 Ερώτημα για το Gaia archive")
+        b_q.setToolTip("Αντιγράφει το ερώτημα ADQL για τη δική σου περιοχή του ουρανού (χρειάζεται πρώτα επιτυχημένο plate solve)")
+        b_q.clicked.connect(self.copy_gaia_query)
+        for b_ in (b_diag, b_file, b_clr, b_q):
+            grow.addWidget(b_)
+        gl.addLayout(grow)
+        self.gaia_file_lbl = QLabel("")
+        self.gaia_file_lbl.setWordWrap(True)
+        gl.addWidget(self.gaia_file_lbl)
+        gl.addWidget(_help("Αν η εφαρμογή δεν μπορεί να κατεβάσει Gaia (firewall/proxy): (1) πάτα «Έλεγχος σύνδεσης» για να δεις γιατί, ή (2) μετά από ένα επιτυχημένο "
+                           "plate solve πάτα «Ερώτημα για το Gaia archive», επικόλλησέ το στο <a href=\"https://gea.esac.esa.int/archive/\">gea.esac.esa.int/archive</a> "
+                           "(Search → Advanced ADQL), κατέβασε το αποτέλεσμα ως CSV και φόρτωσέ το εδώ. Ολόκληρο το Gaia (~1.5 TB) δεν χρειάζεται: μόνο η μικρή περιοχή της φωτογραφίας σου."))
         lay.addWidget(g)
 
         # --- πληροφορίες εικόνας
@@ -330,6 +354,31 @@ class AutoPanel(QWidget):
         outer.addWidget(sa)
         self._inputs = [self.chk_astap, self.ed_astap, self.chk_starnet, self.ed_starnet, self.chk_gaia, self.sp_scale,
                         self.sp_focal, self.sp_pix, self.ed_object, self.cb_stretch, self.chk_dist, btn]
+
+    # ------------------------------------------------------------------ Gaia
+    def set_gaia_file(self, path):
+        self.proj.gaia_file = path
+        self.gaia_file_lbl.setText(f"Χρήση τοπικού αρχείου: {os.path.basename(path)}" if path else "")
+
+    def pick_gaia_file(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Αρχείο Gaia", self.win.settings.value("last_dir", ""),
+                                           "Gaia (*.csv *.fits *.fit *.vot *.xml *.ecsv);;Όλα (*)")
+        if p:
+            self.set_gaia_file(p)
+
+    def check_gaia_connection(self):
+        self.win.run_task(lambda prog: gm.diagnose_connection(log=self.win.log_sig.emit), lambda r: None, "Έλεγχος σύνδεσης Gaia…")
+
+    def copy_gaia_query(self):
+        from PySide6.QtWidgets import QApplication
+        p = self.proj
+        if p.sky is None:
+            self.win._log("Το ερώτημα Gaia χρειάζεται συντεταγμένες: κάνε πρώτα επιτυχημένο plate solve (Έναρξη με ASTAP).")
+            return
+        ra, dec = p.sky.center(p.W)
+        q = gm.gaia_query_text(ra, dec, p._field_radius_deg(), min(p.p.gaia_glim, 15.5))
+        QApplication.clipboard().setText(q)
+        self.win._log("Αντιγράφηκε στο πρόχειρο το ερώτημα για το https://gea.esac.esa.int/archive/ :\n" + q)
 
     # ------------------------------------------------------------------ βοηθητικά
     def _set_step(self, sid, state, msg):

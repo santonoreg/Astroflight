@@ -28,6 +28,7 @@ class Project:
         self.starnet_path: str | None = sn.find_starnet()
         self.starnet_args: str = ""
         self.starnet_stride: int = 0
+        self.gaia_file: str | None = None            # τοπικό αρχείο Gaia (CSV/FITS/VOT) αντί για internet
 
     def reset(self):
         self.image_path = self.starless_path = None
@@ -218,7 +219,7 @@ class Project:
             self.detect()
         ra, dec = self.sky.center(self.W)
         rad = self._field_radius_deg()
-        self.gaia = gm.fetch_gaia(ra, dec, rad, self.p.gaia_glim, cache_dir=self.cache_dir, log=self.log)
+        self.gaia = gm.fetch_gaia(ra, dec, rad, self.p.gaia_glim, cache_dir=self.cache_dir, log=self.log, local_file=self.gaia_file)
         self.dist = gm.assign_distances(self.stars, self.sky, self.gaia, self.W, self.H, self.p.match_tol_px)
         if self.dist["n_matched"] < 8 and len(self.stars) > 30:
             # ίσως η λύση αφορά κατοπτρισμένο προσανατολισμό: δοκιμή με αντίστροφη φορά y
@@ -245,7 +246,7 @@ class Project:
         if sky is not None and self.dist and self.dist["zp"] is not None:
             try:
                 ra, dec = sky.center(self.W)
-                g_ext = gm.fetch_gaia(ra, dec, R, self.p.extra_glim, top=60000, cache_dir=self.cache_dir, log=self.log)
+                g_ext = gm.fetch_gaia(ra, dec, R, self.p.extra_glim, top=60000, cache_dir=self.cache_dir, log=self.log, local_file=self.gaia_file)
                 self.extra = gm.extra_stars_gaia(g_ext, sky, self.W, self.H, self.dist["zp"], float(np.median(self.stars.fwhm)))
                 self.log(f"Επιπλέον αστέρια Gaia εκτός κάδρου: {len(self.extra['x'])} (G<{self.p.extra_glim}, ακτίνα {R:.1f}°)")
                 return

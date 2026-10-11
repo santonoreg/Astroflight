@@ -52,8 +52,103 @@ def _run_query(Gaia, q: str, timeout: float, log):
     return box["t"]
 
 
+COL_ALIASES = {
+    "ra": ("ra", "ra_icrs", "raj2000", "_raj2000"),
+    "dec": ("dec", "de_icrs", "dej2000", "_dej2000"),
+    "parallax": ("parallax", "plx"),
+    "parallax_error": ("parallax_error", "e_plx", "plx_error", "parallax_err"),
+    "g_mag": ("phot_g_mean_mag", "gmag", "g_mag", "g"),
+    "bp_rp": ("bp_rp", "bp-rp", "bprp"),
+    "r_med_geo": ("r_med_geo", "rgeo", "r_geo"),
+}
+
+
+def gaia_query_text(ra: float, dec: float, radius_deg: float, glim: float = 15.5, top: int = 120000) -> str:
+    """Ερώτημα ADQL που μπορείς να επικολλήσεις στο https://gea.esac.esa.int/archive/ (Search → Advanced ADQL) και να
+    κατεβάσεις το αποτέλεσμα ως CSV, αν η εφαρμογή δεν μπορεί να συνδεθεί μόνη της."""
+    return ADQL_NOJOIN.format(top=top, ra=ra, dec=dec, rad=radius_deg, glim=glim).strip()
+
+
+def _table_to_dict(t) -> dict:
+    names = {c.lower(): c for c in t.colnames}
+    out = {}
+    for k in COLS:
+        col = next((names[a] for a in COL_ALIASES[k] if a in names), None)
+        if col is None:
+            out[k] = np.full(len(t), np.nan)
+            continue
+        c = t[col]
+        out[k] = np.asarray(c.filled(np.nan) if hasattr(c, "filled") else c, dtype=np.float64)
+    return out
+
+
+def _sep_deg(ra1, dec1, ra2, dec2):
+    r1, d1, r2, d2 = (np.radians(x) for x in (ra1, dec1, ra2, dec2))
+    c = np.sin(d1) * np.sin(d2) + np.cos(d1) * np.cos(d2) * np.cos(r1 - r2)
+    return np.degrees(np.arccos(np.clip(c, -1.0, 1.0)))
+
+
+def load_gaia_file(path: str, ra: float, dec: float, radius_deg: float, glim: float = 99.0, log=None) -> dict:
+    """Διαβάζει αρχείο Gaia που κατέβασες εσύ (CSV / FITS / VOTable από το Gaia archive ή το VizieR).
+    Χρειάζεται στήλες ra, dec, parallax (+ parallax_error, phot_g_mean_mag· προαιρετικά bp_rp, r_med_geo)."""
+    from astropy.table import Table
+    t = Table.read(path)
+    out = _table_to_dict(t)
+    if not np.isfinite(out["ra"]).any() or not np.isfinite(out["dec"]).any():
+        raise RuntimeError(f"Το αρχείο {os.path.basename(path)} δεν έχει στήλες ra/dec (βρέθηκαν: {', '.join(t.colnames[:12])}).")
+    if not np.isfinite(out["g_mag"]).any():
+        raise RuntimeError("Το αρχείο δεν έχει στήλη μεγέθους G (phot_g_mean_mag).")
+    sep = _sep_deg(out["ra"], out["dec"], ra, dec)
+    keep = np.isfinite(sep) & (sep <= radius_deg * 1.02)      # δεν φιλτράρουμε με μέγεθος: το αρχείο το διάλεξε ο χρήστης
+    out = {k: v[keep] for k, v in out.items()}
+    if log:
+        log(f"Gaia: φορτώθηκαν {int(keep.sum())} πηγές από το αρχείο {os.path.basename(path)}")
+        if keep.sum() and np.percentile(sep[keep], 95) < 0.6 * radius_deg:
+            log("Gaia: ΠΡΟΣΟΧΗ – το αρχείο φαίνεται να καλύπτει μικρότερη περιοχή από το πεδίο της φωτογραφίας.")
+    if keep.sum() < 20:
+        raise RuntimeError(f"Μόνο {int(keep.sum())} πηγές του αρχείου πέφτουν μέσα στο πεδίο (RA {ra:.3f}°, Dec {dec:.3f}°, ακτίνα {radius_deg:.2f}°). "
+                           "Έλεγξε ότι το αρχείο αφορά την ίδια περιοχή του ουρανού.")
+    return out
+
+
+def _query_tap(tap, ra, dec, radius_deg, glim, top, timeout, log, label):
+    """Ερώτημα ADQL σε TAP υπηρεσία: πρώτα με αποστάσεις Bailer-Jones (αν υποστηρίζεται), μετά μόνο παράλλαξη."""
+    err = None
+    for join, tmo in ((True, timeout * 0.4), (False, timeout * 0.6)):
+        if label != "ESA" and join:
+            continue
+        q = (ADQL if join else ADQL_NOJOIN).format(top=top, ra=ra, dec=dec, rad=radius_deg, glim=glim)
+        if log:
+            log(f"Gaia ({label}): ερώτημα {'με αποστάσεις Bailer-Jones' if join else 'μόνο παράλλαξη'} – ακτίνα {radius_deg:.2f}°, G<{glim:.1f}")
+        try:
+            return _run_query(tap, q, tmo, log)
+        except Exception as e:  # noqa
+            err = e
+            if log:
+                log(f"Gaia ({label}): {e}")
+    raise RuntimeError(str(err))
+
+
+def _query_vizier(ra, dec, radius_deg, glim, top, timeout, log):
+    from astroquery.vizier import Vizier
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+    if log:
+        log(f"Gaia (VizieR): ερώτημα I/355/gaiadr3 – ακτίνα {radius_deg:.2f}°, G<{glim:.1f}")
+    v = Vizier(columns=["RA_ICRS", "DE_ICRS", "Plx", "e_Plx", "Gmag", "BP-RP"], row_limit=top,
+               column_filters={"Gmag": f"<{glim:.2f}"}, timeout=timeout)
+    res = v.query_region(SkyCoord(ra * u.deg, dec * u.deg), radius=radius_deg * u.deg, catalog="I/355/gaiadr3")
+    if len(res) == 0 or len(res[0]) == 0:
+        raise RuntimeError("το VizieR δεν επέστρεψε πηγές")
+    return res[0]
+
+
 def fetch_gaia(ra: float, dec: float, radius_deg: float, glim: float = 18.0, top: int = 120000,
-               cache_dir: str | None = None, log=None, timeout: float = 300.0) -> dict:
+               cache_dir: str | None = None, log=None, timeout: float = 300.0, local_file: str | None = None) -> dict:
+    """Πηγές Gaia DR3 γύρω από (ra, dec). Σειρά προσπαθειών: τοπικό αρχείο (αν δόθηκε) → cache → ESA → ARI Heidelberg → VizieR.
+    Σε περίπτωση αποτυχίας το μήνυμα λέει τι ακριβώς απέτυχε σε κάθε υπηρεσία."""
+    if local_file:
+        return load_gaia_file(local_file, ra, dec, radius_deg, glim, log)
     key = hashlib.md5(f"{ra:.4f}{dec:.4f}{radius_deg:.4f}{glim:.2f}{top}".encode()).hexdigest()[:12]
     cache = os.path.join(cache_dir, f"gaia_{key}.npz") if cache_dir else None
     if cache and os.path.exists(cache):
@@ -61,36 +156,84 @@ def fetch_gaia(ra: float, dec: float, radius_deg: float, glim: float = 18.0, top
         if log:
             log(f"Gaia: φορτώθηκε από cache ({len(z['ra'])} πηγές)")
         return {k: z[k] for k in COLS}
-    from astroquery.gaia import Gaia
-    Gaia.ROW_LIMIT = -1
     t = None
-    # 1η προσπάθεια: με αποστάσεις Bailer-Jones (join). Αν αργεί, 2η: μόνο παράλλαξη (πολύ ταχύτερη).
-    for join, tmo in ((True, timeout * 0.45), (False, timeout * 0.55)):
-        q = (ADQL if join else ADQL_NOJOIN).format(top=top, ra=ra, dec=dec, rad=radius_deg, glim=glim)
-        if log:
-            log(f"Gaia: ερώτημα {'με αποστάσεις Bailer-Jones' if join else 'μόνο παράλλαξη (ταχύτερο)'} – ακτίνα {radius_deg:.2f}°, G<{glim:.1f}")
+    errors = []
+    backends = []
+
+    def esa():
+        from astroquery.gaia import Gaia
+        Gaia.ROW_LIMIT = -1
+        return _query_tap(Gaia, ra, dec, radius_deg, glim, top, timeout * 0.5, log, "ESA")
+
+    def ari():
+        from astroquery.utils.tap.core import TapPlus
+        return _query_tap(TapPlus(url="https://gaia.ari.uni-heidelberg.de/tap"), ra, dec, radius_deg, glim, top, timeout * 0.3, log, "ARI")
+
+    def viz():
+        return _query_vizier(ra, dec, radius_deg, glim, top, timeout * 0.3, log)
+
+    for name, fn in (("ESA Gaia archive", esa), ("ARI Heidelberg", ari), ("VizieR (CDS)", viz)):
         try:
-            t = _run_query(Gaia, q, tmo, log)
-            break
+            t = fn()
+            if t is not None and len(t):
+                if log:
+                    log(f"Gaia: δεδομένα από {name}")
+                break
+            t = None
         except Exception as e:  # noqa
+            errors.append(f"{name}: {str(e).strip().splitlines()[0][:160] if str(e).strip() else type(e).__name__}")
             if log:
-                log(f"Gaia: {e}")
-            err = e
+                log(f"Gaia: {name} απέτυχε – {errors[-1]}")
     if t is None:
-        raise RuntimeError(f"Το Gaia δεν απάντησε ({err}). Δοκίμασε αργότερα ή χρησιμοποίησε συνθετικές αποστάσεις.")
-    out = {}
-    for k in COLS:
-        if k not in t.colnames:
-            out[k] = np.full(len(t), np.nan)
-            continue
-        col = t[k]
-        out[k] = np.asarray(col.filled(np.nan) if hasattr(col, "filled") else col, dtype=np.float64)
+        q = gaia_query_text(ra, dec, radius_deg, min(glim, 15.5), top)
+        raise RuntimeError(
+            "Δεν μπόρεσα να πάρω δεδομένα Gaia από καμία υπηρεσία:\n  • " + "\n  • ".join(errors) +
+            "\nΈλεγξε τη σύνδεση (firewall/antivirus/proxy) ή κατέβασε τα δεδομένα χειροκίνητα: άνοιξε https://gea.esac.esa.int/archive/ "
+            "→ Search → Advanced (ADQL), επικόλλησε το ερώτημα παρακάτω, τρέξε το, κατέβασε το αποτέλεσμα ως CSV και φόρτωσέ το "
+            "στην εφαρμογή ως «Τοπικό αρχείο Gaia».\n\n" + q)
+    out = _table_to_dict(t)
     if log:
         log(f"Gaia: {len(out['ra'])} πηγές")
     if cache:
         os.makedirs(cache_dir, exist_ok=True)
         np.savez_compressed(cache, **out)
     return out
+
+
+def diagnose_connection(log=print, timeout: float = 8.0) -> bool:
+    """Ελέγχει αν φτάνουμε στις υπηρεσίες Gaia και εξηγεί τι δεν δουλεύει. Επιστρέφει True αν τουλάχιστον μία απαντά."""
+    import urllib.request, ssl, socket
+    ok_any = False
+    tests = [("ESA Gaia archive", "https://gea.esac.esa.int/tap-server/tap/availability"),
+             ("ARI Heidelberg", "https://gaia.ari.uni-heidelberg.de/tap/availability"),
+             ("VizieR (CDS)", "https://vizier.cds.unistra.fr/viz-bin/votable?-source=I/355/gaiadr3&-c=83.8,-5.4&-c.rs=0.01&-out.max=1")]
+    proxies = {k: v for k, v in os.environ.items() if k.lower() in ("http_proxy", "https_proxy")}
+    log("Έλεγχος σύνδεσης" + (f" (proxy από το περιβάλλον: {', '.join(proxies.values())})" if proxies else "") + "…")
+    import urllib.error
+    for name, url in tests:
+        host = url.split("/")[2]
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                log(f"  ✔ {name}: απαντά (HTTP {r.status})")
+                ok_any = True
+        except urllib.error.HTTPError as e:
+            # ο server απάντησε (π.χ. 404 σε διαφορετικό path) → υπάρχει σύνδεση
+            log(f"  ✔ {name}: προσιτός (HTTP {e.code})")
+            ok_any = True
+        except Exception as e:  # noqa
+            reason = getattr(e, "reason", e)
+            if isinstance(reason, ssl.SSLError) or isinstance(e, ssl.SSLError):
+                log(f"  ✖ {name}: σφάλμα πιστοποιητικού SSL ({reason}). Συχνά το προκαλεί antivirus/εταιρικό proxy που «ανοίγει» τις συνδέσεις HTTPS.")
+            elif isinstance(reason, socket.gaierror):
+                log(f"  ✖ {name}: δεν βρέθηκε η διεύθυνση {host} – δεν υπάρχει internet ή το DNS μπλοκάρεται.")
+            elif isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
+                log(f"  ✖ {name}: καμία απάντηση σε {timeout:.0f} s – πιθανό firewall ή αργή σύνδεση.")
+            else:
+                log(f"  ✖ {name}: {type(e).__name__}: {reason}")
+    if not ok_any:
+        log("Καμία υπηρεσία δεν απάντησε: δοκίμασε από browser το https://gea.esac.esa.int/archive/ . Αν ανοίγει εκεί αλλά όχι εδώ, "
+            "φταίει proxy/antivirus/firewall για την Python· τότε χρησιμοποίησε «Τοπικό αρχείο Gaia».")
+    return ok_any
 
 
 SYN_REF = 1000.0   # οι συνθετικές αποστάσεις παράγονται για αντικείμενο στα 1000 pc και κλιμακώνονται αργότερα

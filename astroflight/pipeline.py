@@ -110,7 +110,7 @@ def run_auto(proj, opts: AutoOptions, rep: Reporter, cancel: CancelToken | None 
             raise RuntimeError("Δεν έχει φορτωθεί εικόνα.")
 
         sig = (proj.image_path, opts.use_astap, opts.use_starnet, opts.use_gaia, opts.scale_arcsec, opts.object_name.strip(),
-               opts.auto_stretch, proj.astap_path, proj.starnet_path, p.star_sigma, p.max_stars, p.gaia_glim, p.match_tol_px,
+               opts.auto_stretch, proj.astap_path, proj.starnet_path, getattr(proj, 'gaia_file', None), p.star_sigma, p.max_stars, p.gaia_glim, p.match_tol_px,
                p.extra_enable, p.extra_radius_deg, p.extra_glim, None if opts.auto_stretch else p.stretched_input)
         if (opts.reuse and getattr(proj, "_auto_sig", None) == sig and proj.stars is not None and proj.dist is not None
                 and proj.starless_lin is not None and proj.scale_arcsec is not None):
@@ -216,22 +216,30 @@ def run_auto(proj, opts: AutoOptions, rep: Reporter, cancel: CancelToken | None 
         # ---------------------------------------------------------------- 5. Gaia
         proj.dist_fallback = False
         if opts.use_gaia and proj.sky is not None:
-            rep.step("gaia", "running", "Λήψη Gaia DR3 (internet)…")
+            src = f"αρχείο {os.path.basename(proj.gaia_file)}" if proj.gaia_file else "internet"
+            rep.step("gaia", "running", f"Gaia DR3 ({src})…")
             try:
                 proj.fetch_gaia_and_match()
                 if proj.dist["zp"] is None or proj.dist["n_matched"] < 8:
-                    raise RuntimeError(f"αντιστοιχίστηκαν μόνο {proj.dist['n_matched']} αστέρια")
+                    raise RuntimeError(f"αντιστοιχίστηκαν μόνο {proj.dist['n_matched']} αστέρια με το Gaia (έλεγξε ότι η λύση του ASTAP είναι σωστή)")
                 summary["gaia"] = True
                 rep.step("gaia", "ok", f"{proj.dist['n_matched']}/{len(proj.stars)} αστέρια με μετρημένη απόσταση")
             except Cancelled:
                 raise
             except Exception as e:  # noqa
                 proj.assign_synthetic()
-                rep.step("gaia", "warn", "Συνθετικές αποστάσεις")
-                warn(f"Gaia: {str(e).rstrip(".")}. Χρησιμοποιώ συνθετικές αποστάσεις αστεριών.")
+                lines = [l for l in str(e).strip().splitlines() if l.strip()]
+                rep.step("gaia", "warn", "Δεν πήρα δεδομένα Gaia – συνθετικές αποστάσεις (δες το log)")
+                warn(f"Gaia: {str(e).strip().rstrip('.')}")
+                summary["gaia_error"] = lines[0] if lines else "άγνωστο σφάλμα"
         else:
             proj.assign_synthetic()
-            rep.step("gaia", "skip", "Συνθετικές αποστάσεις" + ("" if opts.use_gaia else " (απενεργοποιημένο)"))
+            if not opts.use_gaia:
+                rep.step("gaia", "skip", "Συνθετικές αποστάσεις (το Gaia είναι απενεργοποιημένο)")
+            else:
+                rep.step("gaia", "warn", "Παραλείφθηκε: δεν υπάρχει αστρομετρική λύση (το Gaia χρειάζεται τις συντεταγμένες από το ASTAP)")
+                warn("Το Gaia δεν χρησιμοποιήθηκε επειδή δεν βγήκε plate solve: χωρίς συντεταγμένες δεν ξέρουμε ποια περιοχή του ουρανού να ζητήσουμε. "
+                     "Διόρθωσε πρώτα το βήμα ASTAP (διαδρομή, βάση αστεριών D50/D20, κλίμακα ή όνομα αντικειμένου).")
         cancel.check()
 
         proj._auto_sig = sig

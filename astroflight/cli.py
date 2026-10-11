@@ -20,6 +20,8 @@ def main(argv=None):
     ap.add_argument("--distance", type=float, default=None, help="απόσταση αντικειμένου σε pc (αλλιώς αυτόματα)")
     ap.add_argument("--astap", default=None, help="διαδρομή astap")
     ap.add_argument("--starnet", default=None, help="διαδρομή starnet2")
+    ap.add_argument("--gaia-file", default=None, help="τοπικό αρχείο Gaia (CSV/FITS/VOT) αντί για internet")
+    ap.add_argument("--check-gaia", action="store_true", help="έλεγχος σύνδεσης με τους servers Gaia και έξοδος")
     ap.add_argument("--no-astap", action="store_true")
     ap.add_argument("--no-starnet", action="store_true")
     ap.add_argument("--no-gaia", action="store_true")
@@ -30,6 +32,9 @@ def main(argv=None):
     ap.add_argument("--vol", type=int, default=512, help="ανάλυση όγκου (128–1024)")
     ap.add_argument("--frames", type=int, default=0, help="δοκιμή: αποδίδει μόνο τα πρώτα Ν καρέ ισαπέχοντα στη διαδρομή")
     args = ap.parse_args(argv)
+    if args.check_gaia:
+        from .gaia import diagnose_connection
+        sys.exit(0 if diagnose_connection() else 1)
 
     import moderngl
     from .config import Params
@@ -48,6 +53,8 @@ def main(argv=None):
         proj.astap_path = args.astap
     if args.starnet:
         proj.starnet_path = args.starnet
+    if args.gaia_file:
+        proj.gaia_file = args.gaia_file
     scale = args.scale
     if scale is None and args.focal and args.pixel:
         scale = ws.scale_from_optics(args.focal, args.pixel)

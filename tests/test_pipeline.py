@@ -89,5 +89,30 @@ proj.astap_path = proj.starnet_path = "/nonexistent"
 res, st = run(proj, AutoOptions(use_gaia=False, scale_arcsec=3.5))
 check("χωρίς ASTAP/StarNet λειτουργεί με κλίμακα", proj.scene is not None and st["solve"][0] == "skip", str(st["starless"]))
 
+# 7. τοπικό αρχείο Gaia (CSV) – χωρίς internet
+import numpy as np, tempfile
+proj = fresh()
+os.environ.pop("FAKE_ASTAP", None); os.environ.pop("FAKE_STARNET", None)
+res, st = run(proj, AutoOptions(use_gaia=False))                 # πρώτα μια λύση για να έχουμε WCS και αστέρια
+ra, dec = proj.sky.pix_to_world(proj.stars.x, proj.stars.y)
+rng = np.random.default_rng(3)
+n = len(proj.stars)
+csv = os.path.join(tempfile.mkdtemp(), "gaia.csv")
+with open(csv, "w") as f:
+    f.write("source_id,ra,dec,parallax,parallax_error,phot_g_mean_mag,bp_rp\n")
+    for i in range(n):
+        plx = 1000.0 / (1400 + 300 * rng.standard_normal())
+        f.write(f"{i},{ra[i]:.7f},{dec[i]:.7f},{plx:.4f},0.02,{proj.stars.mag[i] + 20.0:.3f},0.8\n")
+proj.gaia_file = csv
+res, st = run(proj, AutoOptions(use_gaia=True))
+check("τοπικό αρχείο Gaia αντιστοιχίζεται", res["gaia"] and proj.dist["n_matched"] > 0.7 * n, st["gaia"][1])
+check("απόσταση από Gaia ~1400 pc", proj.suggest is not None and 1100 < proj.suggest[0] < 1700 or abs(proj.p.object_distance_pc - 1500) < 1, str(proj.suggest))
+proj.gaia_file = None
+os.environ["FAKE_ASTAP"] = "nosolution"
+proj = fresh()
+res, st = run(proj, AutoOptions(use_gaia=True))
+check("χωρίς λύση το Gaia εξηγεί γιατί παραλείφθηκε", st["gaia"][0] == "warn" and "plate solve" in " ".join(res["warnings"]), st["gaia"][1])
+os.environ.pop("FAKE_ASTAP")
+
 print("\nΑΠΟΤΥΧΙΕΣ:", check.failed)
 sys.exit(1 if check.failed else 0)
