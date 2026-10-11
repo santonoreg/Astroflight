@@ -146,6 +146,8 @@ uniform float uAmbZ0;
 uniform float uAmbZ1;
 uniform float uSubGain;
 uniform float uSubThresh;
+uniform float uSubKeep;
+uniform float uSubSat;
 uniform float uFRef;
 uniform float uWhiteRef;
 in vec3 in_pos;
@@ -194,6 +196,7 @@ void main(){
     float F = in_L / r2 * volTrans(uCam, in_pos);
     F = F / (1.0 + F / (uFCap * in_F0));                  // ήπιο όριο: τα κοντινά αστέρια φωτίζουν αλλά δεν «εκρήγνυνται»
     float ratio = max(F / max(in_F0, 1e-12), 1e-9);
+    vec3 subCol = in_col;
     float isAmb = in_fwhm < 0.0 ? 1.0 : 0.0;                       // αρνητικό fwhm = συνθετικό αστέρι ουρανού (εμφανίζεται μόνο στην έξοδο)
     float sizeImg = max(abs(in_fwhm) * pow(ratio, uSizeExp), 1.0);
     float alpha = sizeImg / 1.0197;
@@ -206,8 +209,12 @@ void main(){
         // μικρότερο από pixel: φυσικά θα εξαφανιζόταν (A ∝ aS²). Σε «ουρανό» κρατάμε ορατά τα αστέρια με συμπίεση ~√(φωτεινότητας)
         float t = aS / aMin;
         float Avis = uSubGain * uWhiteRef * sqrt(max(F / (uSubThresh * max(uFRef, 1e-12)) - 1.0, 0.0));   // αμυδρά αστέρια δεν φαίνονται
+        // αραίωση: κρατάμε μόνο ένα ποσοστό των αστεριών (σταθερό ανά αστέρι ώστε να μη «τρεμοπαίζει»)
+        float hsh = fract(sin(dot(in_pos.xy + in_pos.zz * 0.37, vec2(12.9898, 78.233))) * 43758.5453);
+        Avis *= step(hsh, uSubKeep);
         A = max(A * t * t, Avis * (1.0 - t));
         aS = aMin;
+        subCol = mix(vec3(dot(in_col, vec3(0.3333))), in_col, uSubSat);              // ξεθωριασμένο χρώμα προς το λευκό
     }
     float halfQ = 6.0;
     if (uSpikes != 0 && A > 1.5) halfQ = 28.0;
@@ -216,7 +223,7 @@ void main(){
     vec2 off = c * half_px;
     gl_Position = vec4(ndc + off * 2.0 / uView, 0.0, 1.0);
     vOff = off;
-    vCol = in_col;
+    vCol = subCol;
     vAmp = A;
     vAS = aS;
     vHalfQ = half_px / aS;
@@ -432,7 +439,7 @@ class Renderer:
 
     # ------------------------------------------------------------------ render
     def render(self, target: moderngl.Framebuffer, out_size: tuple[int, int], pose, p: Params,
-               hdr_scale: float = 1.0, fov_mul: float = 1.0):
+               hdr_scale: float = 1.0, fov_mul: float = 1.0, fade: float = 1.0):
         """Αποδίδει ένα καρέ στο target (π.χ. οθόνη ή offscreen FBO)."""
         if self.scene is None:
             target.use()
@@ -492,7 +499,7 @@ class Renderer:
                          ("uStarGain", p.star_gain), ("uSizeExp", p.star_size_exp), ("uPxScale", px_scale),
                          ("uSpikes", int(bool(p.spikes))), ("uSpikeAmt", p.spike_amount),
                          ("uHasVol", 1.0 if m.get("use_dust") else 0.0), ("uFCap", 60.0),
-                         ("uNearR", float(0.012 * m["W0"])), ("uSubGain", float(p.star_subpixel)), ("uSubThresh", float(p.star_field_thresh)), ("uAmbZ0", float(m["z0"] + 0.55 * m["E"])), ("uAmbZ1", float(m["z0"] + 1.05 * m["E"])), ("uFRef", float(m.get("fref", 1.0))),
+                         ("uNearR", float(0.012 * m["W0"])), ("uSubGain", float(p.star_subpixel)), ("uSubThresh", float(p.star_field_thresh)), ("uSubKeep", float(p.star_field_density)), ("uSubSat", float(p.star_field_sat)), ("uAmbZ0", float(m["z0"] + 0.55 * m["E"])), ("uAmbZ1", float(m["z0"] + 1.05 * m["E"])), ("uFRef", float(m.get("fref", 1.0))),
                          ("uWhiteRef", float(self.tone.get("white", 1.0)))):
                 _set(ps, n, v)
             _set(ps, "uTanP", (m["tx_p"], m["ty_p"]))
@@ -543,7 +550,7 @@ class Renderer:
         _set(pt, "uBloomA", 1)
         _set(pt, "uBloomB", 2)
         _set(pt, "uBloomAmt", float(p.bloom) if use_bloom else 0.0)
-        _set(pt, "uExposure", p.exposure)
+        _set(pt, "uExposure", p.exposure * min(max(float(fade), 0.0), 1.0))
         _set(pt, "uBg", tuple(map(float, self.scene.bg)))
         t = self.tone
         _set(pt, "uMode", int(t["mode"]))
@@ -554,7 +561,7 @@ class Renderer:
         self.vao_tone.render(moderngl.TRIANGLE_STRIP)
 
     # ------------------------------------------------------------------ offscreen
-    def render_to_array(self, pose, p: Params, size: tuple[int, int], ssaa: int = 1, fov_mul: float = 1.0) -> np.ndarray:
+    def render_to_array(self, pose, p: Params, size: tuple[int, int], ssaa: int = 1, fov_mul: float = 1.0, fade: float = 1.0) -> np.ndarray:
         """Επιστρέφει uint8 (h,w,3) RGB (γραμμή 0 = πάνω)."""
         import cv2
         ctx = self.ctx
@@ -563,7 +570,7 @@ class Renderer:
         tex = ctx.texture((W, Hh), 3, dtype="f1")
         fbo = ctx.framebuffer([tex])
         try:
-            self.render(fbo, (W, Hh), pose, p, hdr_scale=1.0, fov_mul=fov_mul)
+            self.render(fbo, (W, Hh), pose, p, hdr_scale=1.0, fov_mul=fov_mul, fade=fade)
             data = np.frombuffer(fbo.read(components=3), dtype=np.uint8).reshape(Hh, W, 3)[::-1]
             img = np.ascontiguousarray(data)
         finally:

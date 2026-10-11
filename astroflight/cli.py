@@ -80,7 +80,7 @@ def main(argv=None):
     ctx = moderngl.create_standalone_context(backend=backend) if backend else moderngl.create_standalone_context()
     r = Renderer(ctx)
     r.set_scene(proj.scene, proj.tone)
-    path = CameraPath(proj.keyframes, p.duration, p.ease)
+    path = proj.make_path()
     if args.frames:
         import math
         from . import imageio_ as io
@@ -90,7 +90,7 @@ def main(argv=None):
             t = p.duration * i / max(args.frames - 1, 1)
             st = path.eval(t)
             fr = r.render_to_array(pose_from_state(st, m["D0"], m["W0"]), p, (p.out_width, p.out_height), p.ssaa,
-                                   fov_mul=math.exp(st.logfov))
+                                   fov_mul=math.exp(st.logfov), fade=st.fade)
             io.save_png(os.path.join(args.out, f"frame_{i:03d}.png"), fr / 255.0)
             print(f"καρέ {i + 1}/{args.frames}", flush=True)
     else:

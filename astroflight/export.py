@@ -42,7 +42,7 @@ def render_video(renderer, path_obj: CameraPath, p: Params, out_path: str, progr
             t = p.duration * i / (n - 1)
             st = path_obj.eval(t)
             pose = pose_from_state(st, m["D0"], m["W0"])
-            frame = renderer.render_to_array(pose, p, (w, h), ssaa=max(1, int(p.ssaa)), fov_mul=math.exp(st.logfov))
+            frame = renderer.render_to_array(pose, p, (w, h), ssaa=max(1, int(p.ssaa)), fov_mul=math.exp(st.logfov), fade=st.fade)
             if png_sequence:
                 io.save_png(os.path.join(out_path, f"frame_{i:05d}.png"), frame / 255.0)
             else:

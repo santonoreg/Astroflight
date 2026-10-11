@@ -114,5 +114,20 @@ res, st = run(proj, AutoOptions(use_gaia=True))
 check("χωρίς λύση το Gaia εξηγεί γιατί παραλείφθηκε", st["gaia"][0] == "warn" and "plate solve" in " ".join(res["warnings"]), st["gaia"][1])
 os.environ.pop("FAKE_ASTAP")
 
+# 8. διαδρομή πτήσης: ακραίες διάρκειες δεν κρεμούν και ο χρονισμός της εξόδου είναι σωστός
+from astroflight.camera import make_dive
+import math
+for dur, hold in ((2, 5), (6, 5), (40, 5)):
+    t0 = time.time()
+    ks = make_dive(1500.0, 36.86, 47.9, 0.0123, 0.0113, -0.3, 0.2, 1480.0, 0.0, dur, hold=hold, fade_s=1.5)
+    check(f"πτήση duration={dur}s hold={hold}s χωρίς κόλλημα", time.time() - t0 < 10 and len(ks) > 10, f"{time.time() - t0:.2f}s")
+ks = make_dive(1500.0, 36.86, 47.9, 0.0123, 0.0113, -0.3, 0.2, 1480.0, 0.0, 40, hold=5.0, fade_s=1.5)
+zfar = 1500.0 + 47.9 / 2
+def zcam(k):
+    return (1500.0 + k.state.tz * 36.86) - math.exp(k.state.logr) * 1500.0
+t_cross = next(k.t for k in ks if zcam(k) >= zfar)
+check("η κάμερα βγαίνει από το νεφέλωμα ~5 s πριν το τέλος", abs((40 - t_cross) - 5.0) < 0.6, f"{40 - t_cross:.2f}s")
+check("σβήσιμο στο τέλος", ks[0].state.fade == 1.0 and ks[-1].state.fade < 0.05, f"{ks[-1].state.fade:.2f}")
+
 print("\nΑΠΟΤΥΧΙΕΣ:", check.failed)
 sys.exit(1 if check.failed else 0)

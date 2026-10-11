@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 import math
 import numpy as np
 
-FIELDS = ["az", "el", "roll", "logr", "tx", "ty", "tz", "yaw", "pitch", "logfov"]
+FIELDS = ["az", "el", "roll", "logr", "tx", "ty", "tz", "yaw", "pitch", "logfov", "fade"]
 
 
 @dataclass
@@ -18,6 +18,7 @@ class CamState:
     tz: float = 0.0
     yaw: float = 0.0     # ελεύθερη στροφή βλέμματος (μοίρες, + = δεξιά)
     pitch: float = 0.0   # (μοίρες, + = πάνω)
+    fade: float = 1.0    # φωτεινότητα καρέ (1 = κανονική, 0 = μαύρο) – για σβήσιμο στο τέλος
     logfov: float = 0.0  # ln(πολλαπλασιαστής οπτικού πεδίου): 0 = όπως στη φωτογραφία, >0 = ευρύτερο
 
     def vec(self):
@@ -110,52 +111,73 @@ def _smooth(a: float, b: float, x: float) -> float:
 
 
 def _dive_profile(a0: float, a_c: float, L_in: float, duration: float, n: int, t_start: float = 0.9,
-                  t_end: float = 1.6, v_in: float = 0.55, zoom_rate: float = 0.25) -> np.ndarray:
+                  t_end: float = 1.6, v_in: float = 0.55, zoom_rate: float = 0.25, hold: float = 0.0) -> np.ndarray:
     """Θέση της κάμερας στη διαδρομή: επιστρέφει την ΥΠΟΛΟΙΠΗ απόσταση a(t) από την είσοδο του νεφελώματος (a>0 = έξω,
     a<0 = μέσα) για n ισαπέχοντα χρόνους στο [0, duration].
 
     Ταχύτητα  v = min(k·√(a + a_c), zoom_rate·(a + a_c))  έξω: το δεύτερο όριο εγγυάται ότι το νεφέλωμα δεν μεγαλώνει στο
     κάδρο πιο γρήγορα από zoom_rate (σε ln ανά δευτερόλεπτο, π.χ. 0.25 = ×1.28 το δευτερόλεπτο). Αν η διάρκεια είναι πολύ
-    μικρή για να τηρηθεί, το όριο αυξάνεται αυτόματα. Το k είναι η «βασική» ταχύτητα  v = k·√(a + a_c) (ούτε σταθερή ούτε εκθετική: τα αστέρια ξεχύνονται σε όλη τη διάρκεια της πτήσης
-    ενώ το νεφέλωμα μεγαλώνει ομαλά), και σταθερή (v_in × την ταχύτητα εισόδου) μέσα στα νέφη. Ομαλή εκκίνηση (t_start s)
-    και ομαλή προσγείωση στο τέλος (t_end s). Το k βρίσκεται με διχοτόμηση ώστε να φτάνει ακριβώς στο τέλος στον χρόνο."""
+    μικρή για να τηρηθεί, το όριο αυξάνεται αυτόματα. Το k είναι η «βασική» ταχύτητα. Μέσα στα νέφη σταθερή (v_in × την
+    ταχύτητα εισόδου). Ομαλή εκκίνηση (t_start s).
+
+    hold = 0: η κάμερα «προσγειώνεται» ομαλά στο τέλος του μήκους L_in (μέσα στα νέφη).
+    hold > 0: το L_in είναι το μήκος που πρέπει να διανυθεί ΜΕΧΡΙ να βγει η κάμερα από το νεφέλωμα· αυτό γίνεται ακριβώς τη
+    στιγμή duration − hold, και τα τελευταία hold δευτερόλεπτα η κάμερα συνεχίζει αργά (και επιβραδύνει) σε πεδίο αστεριών."""
+    duration = max(float(duration), 1.0)
+    hold = min(max(float(hold), 0.0), 0.5 * duration)      # ποτέ περισσότερο από το μισό βίντεο στο πεδίο αστεριών
     dt = duration / 4000.0
     ts = np.arange(4001) * dt
-
     zr = max(zoom_rate, 1e-3)
+    T1 = duration - hold if hold > 0 else duration
 
     def sim(k):
         a = a0
         out = np.empty_like(ts)
+        t_cross = math.inf
+        v_c = 0.0
         for i, t in enumerate(ts):
             out[i] = a
-            v = min(k * math.sqrt(max(a, 0.0) + a_c), zr * (max(a, 0.0) + a_c)) if a > 0 else min(k * math.sqrt(a_c), zr * a_c) * v_in
-            f = _smooth(0.0, t_start, t) * (0.3 + 0.7 * _smooth(0.0, 1.0, (a + L_in) / max(0.2 * L_in, 1e-9)) if a < 0 else 1.0)
-            a -= v * f * dt
-            if a < -L_in:
+            ease = _smooth(0.0, t_start, t)
+            if hold > 0 and a <= -L_in:
+                if t_cross == math.inf:
+                    t_cross = t
+                v = v_c * (1.0 - 0.7 * _smooth(0.0, hold, t - t_cross))
+            elif a > 0:
+                v = min(k * math.sqrt(a + a_c), zr * (a + a_c)) * ease
+                v_c = v
+            else:
+                v = min(k * math.sqrt(a_c), zr * a_c) * v_in * ease
+                if hold == 0:
+                    v *= 0.3 + 0.7 * _smooth(0.0, 1.0, (a + L_in) / max(0.2 * L_in, 1e-9))
+                v_c = v
+            a -= v * dt
+            if hold == 0 and a < -L_in:
                 a = -L_in
-        return out
+        return out, t_cross
 
-    while True:                                  # αν δεν φτάνει στον χρόνο ακόμη και με πολύ μεγάλο k, χαλάρωσε το όριο ζουμ
-        if sim(1e3)[-1] <= -L_in * 0.995:
+    def reached(k):
+        out, tc = sim(k)
+        return (tc <= T1) if hold > 0 else (out[-1] <= -L_in * 0.995)
+
+    for _ in range(80):                         # αν δεν φτάνει στον χρόνο ακόμη και με πολύ μεγάλο k, χαλάρωσε το όριο ζουμ
+        if reached(1e3):
             break
         zr *= 1.25
     lo, hi = 1e-4, 1e3
     for _ in range(60):
         k = 0.5 * (lo + hi)
-        traj = sim(k)
-        if traj[-1] > -L_in * 0.995:
-            lo = k
-        else:
+        if reached(k):
             hi = k
-    traj = sim(0.5 * (lo + hi))
+        else:
+            lo = k
+    traj, _tc = sim(hi)
     return np.interp(np.linspace(0.0, duration, n), ts, traj)
 
 
 def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float = 0.0, fy: float = 0.0,
-              z_end: float | None = None, drift: float = 0.0, duration: float = 12.0, n_keys: int = 61,
+              z_end: float | None = None, drift: float = 0.0, duration: float = 12.0, n_keys: int = 0,
               frac_approach: float = 0.42, zoom_end: float = 2.5, fov_max_deg: float = 55.0,
-              zoom_rate: float = 0.25, exit_dist: float = 0.0) -> list[Keyframe]:
+              zoom_rate: float = 0.25, hold: float = 0.0, fade_s: float = 0.0) -> list[Keyframe]:
     """Ευθεία πτήση ΜΕΣΑ στο νεφέλωμα, από το σημείο λήψης προς ένα σημείο του κάδρου.
 
     fx, fy:  σημείο-στόχος ως ποσοστό του μισού πλάτους/ύψους της εικόνας (−1…1, 0 = κέντρο, +x δεξιά, +y πάνω)
@@ -165,8 +187,9 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
     frac_approach: (δεν χρησιμοποιείται πλέον για το ρυθμό· διατηρείται για συμβατότητα)
     zoom_end:    πόσες φορές «μεγαλύτερο» φαίνεται το νεφέλωμα όταν πλησιάζει την είσοδο σε σχέση με τη φωτογραφία
                  (το οπτικό πεδίο ανοίγει ώστε το νεφέλωμα να μεγαλώνει ομαλά και όχι να βγαίνει απότομα από το κάδρο)
-    exit_dist:   αν > 0 (pc) η κάμερα συνεχίζει ΠΕΡΑ από την πίσω πλευρά του νεφελώματος και σταματά σε αυτή την απόσταση έξω
-                 από αυτό, σε πεδίο μόνο με αστέρια (το z_end αγνοείται).
+    hold:        αν > 0 (s) η κάμερα περνά ΠΕΡΑ από την πίσω πλευρά του νεφελώματος και μένει τόσα δευτερόλεπτα σε πεδίο μόνο με
+                 αστέρια μέχρι το τέλος του βίντεο (το z_end αγνοείται).
+    fade_s:      σβήσιμο στο μαύρο τα τελευταία fade_s δευτερόλεπτα.
     fov_max_deg: μέγιστο ΚΑΤΑΚΟΡΥΦΟ οπτικό πεδίο της κάμερας (μοίρες) – όσο μπαίνεις στα νέφη ανοίγει μέχρι εδώ.
 
     Η κάμερα ξεκινά ΑΚΡΙΒΩΣ από το σημείο λήψης (κοιτάζει +z) και κινείται σε ευθεία γραμμή προς τον στόχο.
@@ -174,8 +197,10 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
     z0 = D0 - E / 2.0
     z_far = D0 + E / 2.0
     z_end = D0 if z_end is None else float(z_end)
-    if exit_dist > 0:
-        z_end = z_far + float(exit_dist)
+    hold = min(max(float(hold), 0.0), 0.5 * duration)
+    fade_s = min(max(float(fade_s), 0.0), 0.5 * duration)
+    if hold > 0:
+        z_end = z_far                                   # προσωρινά· υπολογίζεται από το προφίλ παρακάτω
     else:
         z_end = min(max(z_end, z0 + 0.12 * E), z_far - 0.05 * E)
     z_ref = max(z_far, z_end) + 0.05 * E              # σημείο αναφοράς (target) πίσω από την κάμερα ώστε R > 0 πάντα
@@ -185,10 +210,18 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
     tz = (z_ref - D0) / W0
     a_front = 0.02 * E                       # σταματά η «προσέγγιση» λίγο πριν το μέτωπο του όγκου
     z_in = z0 - a_front
-    L_in = z_end - z_in
     a_c = max(0.6 * E, 1e-3)                 # κλίμακα όπου η ταχύτητα αρχίζει να πέφτει
-    N = n_keys
-    a_traj = _dive_profile(z_in, a_c, L_in, duration, N, zoom_rate=zoom_rate)
+    N = n_keys if n_keys else max(61, int(duration * 4) + 1)
+    if hold > 0:
+        L_in = z_far - z_in                  # μήκος μέχρι να βγει από το νεφέλωμα
+        a_traj = _dive_profile(z_in, a_c, L_in, duration, N, zoom_rate=zoom_rate, hold=hold)
+        z_end = z_in - float(a_traj[-1])
+        z_ref = z_end + 0.05 * E
+        P_end = np.array([fx * tx0 * z_end, fy * ty0 * z_end, z_end])
+    else:
+        L_in = z_end - z_in
+        a_traj = _dive_profile(z_in, a_c, L_in, duration, N, zoom_rate=zoom_rate)
+    tz = (z_ref - D0) / W0
     ln_ref = math.log(max(z_in, 1.0) / max(3.0 * E, 1e-3))
     keys = []
     for i in range(N):
@@ -209,5 +242,6 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
         keys.append(Keyframe(duration * x, CamState(
             az=0.0, el=0.0, roll=0.0, logr=math.log(R / D0),
             tx=s_ * P_end[0] / W0 + drift * bell, ty=s_ * P_end[1] / W0, tz=tz,
-            yaw=yaw_T * g, pitch=pitch_T * g, logfov=math.log(T / ty0))))
+            yaw=yaw_T * g, pitch=pitch_T * g, logfov=math.log(T / ty0),
+            fade=1.0 - _smooth(duration - fade_s, duration, duration * x) if fade_s > 0 else 1.0)))
     return keys

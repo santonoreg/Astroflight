@@ -291,6 +291,12 @@ class Project:
             self.default_path()
         return self.scene
 
+    def make_path(self):
+        """CameraPath για την τρέχουσα πτήση. Η ευθεία πτήση (dive) έχει δική της εκκίνηση/πέδηση, άρα δεν παίρνει επιπλέον
+        ομαλοποίηση του χρόνου (αλλιώς στρεβλώνεται ο χρονισμός, π.χ. τα δευτερόλεπτα στο τέλος)."""
+        from .camera import CameraPath
+        return CameraPath(self.keyframes, self.p.duration, bool(self.p.ease) and self.path_kind != "dive")
+
     def default_path(self):
         """Προεπιλεγμένη πτήση: ευθεία βουτιά ΜΕΣΑ στα νέφη του νεφελώματος."""
         if self.scene:
@@ -311,7 +317,7 @@ class Project:
         self.keyframes = make_dive(m["D0"], m["W0"], m["E"], m["tx0"], m["ty0"], fx, fy, z_end,
                                    float(p.dive_drift), float(p.duration),
                                    zoom_end=float(p.dive_zoom), fov_max_deg=float(p.dive_fov_max),
-                                   zoom_rate=float(p.dive_zoom_rate), exit_dist=float(p.dive_exit) * m["W0"])
+                                   zoom_rate=float(p.dive_zoom_rate), hold=float(p.dive_hold), fade_s=float(p.dive_fade))
         self.log(f"Πτήση: στόχος ({fx:+.2f}, {fy:+.2f}), τέλος στα {z_end:.1f} pc (αρχή {m['D0']:.1f} pc).")
         return self.keyframes
 
@@ -339,5 +345,5 @@ class Project:
                 self.load_starless(d["starless"])
             if d.get("scale_arcsec"):
                 self.set_scale(d["scale_arcsec"])
-        self.keyframes = [Keyframe(k["t"], CamState(**{a: k.get(a, 0.0) for a in ("az", "el", "roll", "logr", "tx", "ty", "tz", "yaw", "pitch", "logfov")}))
+        self.keyframes = [Keyframe(k["t"], CamState(**{a: k.get(a, 1.0 if a == "fade" else 0.0) for a in ("az", "el", "roll", "logr", "tx", "ty", "tz", "yaw", "pitch", "logfov", "fade")}))
                           for k in d.get("keyframes", [])]
