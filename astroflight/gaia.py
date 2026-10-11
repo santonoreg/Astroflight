@@ -7,7 +7,7 @@ from .stars import Stars
 from .wcs_solve import SkyWCS
 
 ADQL = """
-SELECT TOP {top} g.source_id, g.ra, g.dec, g.parallax, g.parallax_error, g.phot_g_mean_mag AS g_mag,
+SELECT TOP {top} g.ra, g.dec, g.parallax, g.parallax_error, g.phot_g_mean_mag AS g_mag,
        g.bp_rp, d.r_med_geo
 FROM gaiadr3.gaia_source AS g
 LEFT JOIN external.gaiaedr3_distance AS d ON g.source_id = d.source_id
@@ -16,7 +16,7 @@ WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', {ra:.6f}, {dec:.6f
 """
 # Εναλλακτικό (χωρίς join με τον πίνακα αποστάσεων Bailer-Jones): πολύ ταχύτερο, αποστάσεις από παράλλαξη
 ADQL_NOJOIN = """
-SELECT TOP {top} g.source_id, g.ra, g.dec, g.parallax, g.parallax_error, g.phot_g_mean_mag AS g_mag,
+SELECT TOP {top} g.ra, g.dec, g.parallax, g.parallax_error, g.phot_g_mean_mag AS g_mag,
        g.bp_rp
 FROM gaiadr3.gaia_source AS g
 WHERE 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', {ra:.6f}, {dec:.6f}, {rad:.5f}))
@@ -143,6 +143,18 @@ def _query_vizier(ra, dec, radius_deg, glim, top, timeout, log):
     return res[0]
 
 
+_BACKEND_STATE = {"ok": None, "bad": set()}
+
+
+def _backend_order() -> list[str]:
+    """Σειρά δοκιμής: ό,τι δούλεψε τελευταίο, μετά VizieR → ARI → ESA (ο ESA είναι συχνά αργός), και όσοι απέτυχαν στο τέλος."""
+    base = ["VizieR (CDS)", "ARI Heidelberg", "ESA Gaia archive"]
+    ok = _BACKEND_STATE["ok"]
+    order = ([ok] if ok else []) + [b for b in base if b != ok]
+    good = [b for b in order if b not in _BACKEND_STATE["bad"]]
+    return good + [b for b in order if b in _BACKEND_STATE["bad"]]
+
+
 def fetch_gaia(ra: float, dec: float, radius_deg: float, glim: float = 18.0, top: int = 120000,
                cache_dir: str | None = None, log=None, timeout: float = 300.0, local_file: str | None = None) -> dict:
     """Πηγές Gaia DR3 γύρω από (ra, dec). Σειρά προσπαθειών: τοπικό αρχείο (αν δόθηκε) → cache → ESA → ARI Heidelberg → VizieR.
@@ -163,7 +175,7 @@ def fetch_gaia(ra: float, dec: float, radius_deg: float, glim: float = 18.0, top
     def esa():
         from astroquery.gaia import Gaia
         Gaia.ROW_LIMIT = -1
-        return _query_tap(Gaia, ra, dec, radius_deg, glim, top, timeout * 0.5, log, "ESA")
+        return _query_tap(Gaia, ra, dec, radius_deg, glim, top, timeout * 0.4, log, "ESA")
 
     def ari():
         from astroquery.utils.tap.core import TapPlus
@@ -172,15 +184,18 @@ def fetch_gaia(ra: float, dec: float, radius_deg: float, glim: float = 18.0, top
     def viz():
         return _query_vizier(ra, dec, radius_deg, glim, top, timeout * 0.3, log)
 
-    for name, fn in (("ESA Gaia archive", esa), ("ARI Heidelberg", ari), ("VizieR (CDS)", viz)):
+    fns = {"ESA Gaia archive": esa, "ARI Heidelberg": ari, "VizieR (CDS)": viz}
+    for name in _backend_order():
         try:
-            t = fn()
+            t = fns[name]()
             if t is not None and len(t):
+                _BACKEND_STATE["ok"] = name
                 if log:
                     log(f"Gaia: δεδομένα από {name}")
                 break
             t = None
         except Exception as e:  # noqa
+            _BACKEND_STATE["bad"].add(name)                 # μέχρι να κλείσει η εφαρμογή δεν ξαναδοκιμάζεται πρώτος
             errors.append(f"{name}: {str(e).strip().splitlines()[0][:160] if str(e).strip() else type(e).__name__}")
             if log:
                 log(f"Gaia: {name} απέτυχε – {errors[-1]}")

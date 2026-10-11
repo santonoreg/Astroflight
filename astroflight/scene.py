@@ -91,20 +91,33 @@ def build_scene(lin: np.ndarray, starless: np.ndarray, stars: Stars, dist_pc: np
         return np.exp(-0.5 * ((t[kk] - c) / sg) ** 2)
 
     prog(0.15, "Κανονικοποίηση προφίλ")
+    # πίσω κέλυφος: καθρεφτισμένο βάθος (1 - βάθος) με βάρος m, ώστε μέσα στο νεφέλωμα να υπάρχει «τοίχωμα» και απέναντι
+    mrr = float(np.clip(getattr(p, "rear_shell", 0.0), 0.0, 0.9))
+    center2 = np.clip(1.0 - center, 0.03, 0.97).astype(np.float32)
     Wsum = np.zeros((nyp, nxp), np.float32)
+    Wsum2 = np.zeros((nyp, nxp), np.float32)
     Dsum = np.zeros((nyp, nxp), np.float32)
     for kk in range(nz):
         Wsum += prof(kk, center, sigma)
+        if mrr > 0:
+            Wsum2 += prof(kk, center2, sigma)
         if use_dust:
             Dsum += prof(kk, dcenter, dsig)
     Wsum = np.maximum(Wsum, 1e-9)
+    Wsum2 = np.maximum(Wsum2, 1e-9)
     Dsum = np.maximum(Dsum, 1e-9)
+
+    def wfun(kk):
+        w = (1.0 - mrr) * prof(kk, center, sigma) / Wsum
+        if mrr > 0:
+            w = w + mrr * prof(kk, center2, sigma) / Wsum2
+        return w
 
     vol = np.zeros((nz, nyp, nxp, 4), np.float16)
     cum = np.zeros((nyp, nxp), np.float32)
     S = np.zeros((nyp, nxp), np.float32)
     for kk in range(nz):
-        wk = prof(kk, center, sigma) / Wsum
+        wk = wfun(kk)
         if use_dust:
             ak = tau * prof(kk, dcenter, dsig) / Dsum
             vol[kk, ..., 3] = ak
@@ -115,7 +128,7 @@ def build_scene(lin: np.ndarray, starless: np.ndarray, stars: Stars, dist_pc: np
     B = (1.0 / np.maximum(S, 1e-3)).astype(np.float32) if use_dust else np.ones_like(S)
     prog(0.35, "Όγκος εκπομπής")
     for kk in range(nz):
-        wk = (prof(kk, center, sigma) / Wsum) * B
+        wk = wfun(kk) * B
         vol[kk, ..., :3] = (low_p * wk[..., None]).astype(np.float16)
 
     # --- detail (full-res) ---
@@ -172,11 +185,35 @@ def build_scene(lin: np.ndarray, starless: np.ndarray, stars: Stars, dist_pc: np
         sa[:, 6] = L
         sa[:, 7] = F0
         sa[:, 8] = sfwhm
+    # --- συνθετικός ουρανός γύρω από το σημείο εξόδου: γεμίζει το κάδρο όταν το οπτικό πεδίο ανοίγει πολύ ---
+    n_amb = int(getattr(p, "ambient_stars", 0))
+    if n_amb > 0 and len(stars) > 5:
+        rng = np.random.default_rng(11)
+        C = np.array([0.0, 0.0, D0 + E / 2.0 + 0.4 * W0])                # περίπου εκεί που βγαίνει η κάμερα
+        psi = np.radians(70.0)                                            # ημιγωνία κώνου γύρω από τον άξονα +z
+        cz = rng.uniform(np.cos(psi), 1.0, n_amb)                         # ομοιόμορφα κατά στερεά γωνία
+        ph = rng.uniform(0, 2 * np.pi, n_amb)
+        sz = np.sqrt(1 - cz * cz)
+        dirs = np.c_[sz * np.cos(ph), sz * np.sin(ph), cz]
+        rr_amb = 3.0 * D0 * rng.uniform(0, 1, n_amb) ** 0.45 + 4.0 * W0 / 36.0
+        posA = C + dirs * rr_amb[:, None]
+        r_o = np.linalg.norm(posA, axis=1)                               # απόσταση από τον αρχικό παρατηρητή
+        order = np.argsort(-stars.flux)                                   # μόνο τα φωτεινότερα: στο ανοιχτό κάδρο τα αμυδρά δεν φαίνονται
+        bright = order[:max(8, int(0.10 * len(stars)))]
+        pick = bright[rng.integers(0, len(bright), n_amb)]
+        F0a = np.maximum(stars.flux[pick].astype(np.float64) * np.exp(rng.normal(0, 0.35, n_amb)), 1e-9)
+        amb = np.zeros((n_amb, 9), np.float32)
+        amb[:, 0:3] = posA
+        amb[:, 3:6] = (stars.flux_rgb[pick] / np.maximum(stars.flux[pick], 1e-12)[:, None])
+        amb[:, 6] = F0a * r_o * r_o
+        amb[:, 7] = F0a
+        amb[:, 8] = -np.abs(stars.fwhm[pick])                             # αρνητικό = ουρανός (βλ. renderer)
+        sa = np.vstack([sa, amb])
     prog(0.95, "Τέλος")
 
     meta = dict(nz=nz, nxp=nxp, nyp=nyp, Wp=Wp, Hp=Hp, z0=float(z0), E=float(E), tx_p=float(tx_p), ty_p=float(ty_p),
                 tx0=float(tx0), ty0=float(ty0), D0=D0, W0=float(W0), W=W, H=H, s=float(s), pad_low=pad_low, pf=pf,
-                use_dust=bool(use_dust))
+                use_dust=bool(use_dust), fref=float(np.median(stars.flux)) if len(stars) else 1.0)
     dp = depth[pad_low:nyp - pad_low, pad_low:nxp - pad_low] if pad_low > 0 else depth
     meta['n_main_stars'] = n_main
     return SceneData(vol=vol, detail=detail, bg=bg, stars=sa, meta=meta, depth_preview=dp.copy(), star_dist=rr)

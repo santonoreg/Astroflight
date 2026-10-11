@@ -46,6 +46,7 @@ def main(argv=None):
 
     p = Params(duration=args.duration, fps=args.fps, ssaa=args.ssaa, vol_size=args.vol)
     p.out_width, p.out_height = (int(v) for v in args.size.lower().split("x"))
+    p.steps = max(p.steps, 256)
     if args.distance:
         p.object_distance_pc = args.distance
     proj = Project(p, log=print)

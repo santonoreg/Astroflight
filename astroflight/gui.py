@@ -200,7 +200,7 @@ BUILD_KEYS = ({s[0] for g in ("Βάθος νεφελώματος", "Όγκος (
 STAR_KEYS = {"stretched_input", "gamma", "star_sigma", "max_stars", "gaia_glim", "match_tol_px",
              "extra_enable", "extra_radius_deg", "extra_glim"}
 LAST = len(STEP_NAMES) - 1
-DIVE_KEYS = {"dive_zoom_rate", "dive_zoom", "dive_fov_max", "dive_depth", "dive_auto_poi", "dive_fx", "dive_fy", "dive_drift", "duration"}
+DIVE_KEYS = {"dive_exit", "dive_zoom_rate", "dive_zoom", "dive_fov_max", "dive_depth", "dive_auto_poi", "dive_fx", "dive_fy", "dive_drift", "duration"}
 
 
 class MainWindow(QMainWindow):
@@ -711,6 +711,8 @@ class MainWindow(QMainWindow):
                    "Πόσο μέσα στα νέφη τελειώνει η πτήση. Μικρή τιμή = μένεις στα εξωτερικά, φωτεινά στρώματα· μεγάλη = βαθιά μέσα (πιο σκοτεινά).")
         self._prow(gl, "dive_zoom", "Zoom προσέγγισης (×)", "f", 1.0, 8.0, 0.1,
                    "Πόσες φορές μεγαλύτερο φαίνεται το νεφέλωμα όταν η κάμερα φτάνει στην είσοδό του. 1 = όσο στη φωτογραφία, μεγάλο = «ξεχειλίζει» από το κάδρο.")
+        self._prow(gl, "dive_exit", "Έξοδος από το νεφέλωμα (× πλάτος)", "f", 0.0, 1.5, 0.05,
+                   "Η κάμερα συνεχίζει πέρα από την πίσω πλευρά του νεφελώματος και σταματά αυτή την απόσταση έξω, σε πεδίο μόνο με αστέρια. 0 = μένει μέσα (τότε ισχύει το «Βάθος τέλους»).")
         self._prow(gl, "dive_zoom_rate", "Μέγιστη ταχύτητα ζουμ", "f", 0.05, 1.0, 0.01,
                    "Πόσο γρήγορα επιτρέπεται να μεγαλώνει το νεφέλωμα στο κάδρο (0.1 = πολύ αργά, 0.25 = ήρεμα, 0.5 = γρήγορα). Μικρότερο = πιο αργό ζουμ, αλλά και μεγαλύτερη ελάχιστη διάρκεια.")
         self._prow(gl, "dive_fov_max", "Μέγιστο οπτικό πεδίο (°)", "f", 20, 100, 1,
@@ -1344,14 +1346,21 @@ def apply_dark_theme(app):
     app.setPalette(pal)
 
 
-def main():
+def set_gl_format():
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
     fmt.setProfile(QSurfaceFormat.CoreProfile)
     fmt.setSwapInterval(1)
     QSurfaceFormat.setDefaultFormat(fmt)
-    app = QApplication(sys.argv)
+
+
+def main(app=None, splash=None):
+    if app is None:
+        set_gl_format()
+        app = QApplication(sys.argv)
     apply_dark_theme(app)
     win = MainWindow()
     win.show()
+    if splash is not None:
+        splash.finish(win)
     sys.exit(app.exec())

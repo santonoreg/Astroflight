@@ -155,7 +155,7 @@ def _dive_profile(a0: float, a_c: float, L_in: float, duration: float, n: int, t
 def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float = 0.0, fy: float = 0.0,
               z_end: float | None = None, drift: float = 0.0, duration: float = 12.0, n_keys: int = 61,
               frac_approach: float = 0.42, zoom_end: float = 2.5, fov_max_deg: float = 55.0,
-              zoom_rate: float = 0.25) -> list[Keyframe]:
+              zoom_rate: float = 0.25, exit_dist: float = 0.0) -> list[Keyframe]:
     """Ευθεία πτήση ΜΕΣΑ στο νεφέλωμα, από το σημείο λήψης προς ένα σημείο του κάδρου.
 
     fx, fy:  σημείο-στόχος ως ποσοστό του μισού πλάτους/ύψους της εικόνας (−1…1, 0 = κέντρο, +x δεξιά, +y πάνω)
@@ -165,6 +165,8 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
     frac_approach: (δεν χρησιμοποιείται πλέον για το ρυθμό· διατηρείται για συμβατότητα)
     zoom_end:    πόσες φορές «μεγαλύτερο» φαίνεται το νεφέλωμα όταν πλησιάζει την είσοδο σε σχέση με τη φωτογραφία
                  (το οπτικό πεδίο ανοίγει ώστε το νεφέλωμα να μεγαλώνει ομαλά και όχι να βγαίνει απότομα από το κάδρο)
+    exit_dist:   αν > 0 (pc) η κάμερα συνεχίζει ΠΕΡΑ από την πίσω πλευρά του νεφελώματος και σταματά σε αυτή την απόσταση έξω
+                 από αυτό, σε πεδίο μόνο με αστέρια (το z_end αγνοείται).
     fov_max_deg: μέγιστο ΚΑΤΑΚΟΡΥΦΟ οπτικό πεδίο της κάμερας (μοίρες) – όσο μπαίνεις στα νέφη ανοίγει μέχρι εδώ.
 
     Η κάμερα ξεκινά ΑΚΡΙΒΩΣ από το σημείο λήψης (κοιτάζει +z) και κινείται σε ευθεία γραμμή προς τον στόχο.
@@ -172,11 +174,15 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
     z0 = D0 - E / 2.0
     z_far = D0 + E / 2.0
     z_end = D0 if z_end is None else float(z_end)
-    z_end = min(max(z_end, z0 + 0.12 * E), z_far - 0.05 * E)
+    if exit_dist > 0:
+        z_end = z_far + float(exit_dist)
+    else:
+        z_end = min(max(z_end, z0 + 0.12 * E), z_far - 0.05 * E)
+    z_ref = max(z_far, z_end) + 0.05 * E              # σημείο αναφοράς (target) πίσω από την κάμερα ώστε R > 0 πάντα
     P_end = np.array([fx * tx0 * z_end, fy * ty0 * z_end, z_end])
     yaw_T = math.degrees(math.atan(fx * tx0))
     pitch_T = math.degrees(math.atan(fy * ty0))
-    tz = (z_far - D0) / W0
+    tz = (z_ref - D0) / W0
     a_front = 0.02 * E                       # σταματά η «προσέγγιση» λίγο πριν το μέτωπο του όγκου
     z_in = z0 - a_front
     L_in = z_end - z_in
@@ -190,7 +196,7 @@ def make_dive(D0: float, W0: float, E: float, tx0: float, ty0: float, fx: float 
         a = float(a_traj[i])
         z_cam = min(max(z_in - a, 0.0), z_end)
         s_ = z_cam / z_end
-        R = max(z_far - z_cam, 0.02 * W0)
+        R = max(z_ref - z_cam, 0.02 * W0)
         g = _smooth(0.0, 0.85, s_)
         bell = math.sin(math.pi * x) ** 2
         # οπτικό πεδίο: το νεφέλωμα (κέντρο στο D0) φαίνεται zoom_end φορές μεγαλύτερο από τη φωτογραφία όταν φτάνει στην

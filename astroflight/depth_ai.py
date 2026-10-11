@@ -4,9 +4,10 @@ import numpy as np
 
 
 def available() -> bool:
+    # ΧΩΡΙΣ import: το import των torch/transformers είναι αργό και δεν χρειάζεται στην εκκίνηση της εφαρμογής
+    import importlib.util
     try:
-        import torch, transformers  # noqa
-        return True
+        return all(importlib.util.find_spec(m) is not None for m in ("torch", "transformers", "PIL"))
     except Exception:
         return False
 

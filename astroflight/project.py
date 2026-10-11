@@ -311,7 +311,7 @@ class Project:
         self.keyframes = make_dive(m["D0"], m["W0"], m["E"], m["tx0"], m["ty0"], fx, fy, z_end,
                                    float(p.dive_drift), float(p.duration),
                                    zoom_end=float(p.dive_zoom), fov_max_deg=float(p.dive_fov_max),
-                                   zoom_rate=float(p.dive_zoom_rate))
+                                   zoom_rate=float(p.dive_zoom_rate), exit_dist=float(p.dive_exit) * m["W0"])
         self.log(f"Πτήση: στόχος ({fx:+.2f}, {fy:+.2f}), τέλος στα {z_end:.1f} pc (αρχή {m['D0']:.1f} pc).")
         return self.keyframes
 

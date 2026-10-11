@@ -142,6 +142,11 @@ uniform int uSpikes;
 uniform float uHasVol;
 uniform float uFCap;
 uniform float uNearR;
+uniform float uAmbZ0;
+uniform float uAmbZ1;
+uniform float uSubGain;
+uniform float uFRef;
+uniform float uWhiteRef;
 in vec3 in_pos;
 in vec3 in_col;
 in float in_L;
@@ -188,13 +193,21 @@ void main(){
     float F = in_L / r2 * volTrans(uCam, in_pos);
     F = F / (1.0 + F / (uFCap * in_F0));                  // ήπιο όριο: τα κοντινά αστέρια φωτίζουν αλλά δεν «εκρήγνυνται»
     float ratio = max(F / max(in_F0, 1e-12), 1e-9);
-    float sizeImg = max(in_fwhm * pow(ratio, uSizeExp), 1.0);
+    float isAmb = in_fwhm < 0.0 ? 1.0 : 0.0;                       // αρνητικό fwhm = συνθετικό αστέρι ουρανού (εμφανίζεται μόνο στην έξοδο)
+    float sizeImg = max(abs(in_fwhm) * pow(ratio, uSizeExp), 1.0);
     float alpha = sizeImg / 1.0197;
     float A = uStarGain * F * (BETA - 1.0) / (3.14159265 * alpha * alpha);
-    A *= smoothstep(uNearR, 4.0 * uNearR, sqrt(r2));     // σβήνουν ομαλά καθώς περνούν δίπλα από την κάμερα
+    A *= smoothstep(uNearR, 4.0 * uNearR, sqrt(r2));
+    A *= mix(1.0, smoothstep(uAmbZ0, uAmbZ1, uCam.z), isAmb);     // σβήνουν ομαλά καθώς περνούν δίπλα από την κάμερα
     float aS = alpha * uPxScale;
     const float aMin = 0.6;
-    if (aS < aMin) { A *= (aS / aMin) * (aS / aMin); aS = aMin; }
+    if (aS < aMin) {
+        // μικρότερο από pixel: φυσικά θα εξαφανιζόταν (A ∝ aS²). Σε «ουρανό» κρατάμε ορατά τα αστέρια με συμπίεση ~√(φωτεινότητας)
+        float t = aS / aMin;
+        float Avis = uSubGain * uWhiteRef * sqrt(max(F / (3.0 * max(uFRef, 1e-12)) - 1.0, 0.0));   // αμυδρά αστέρια δεν φαίνονται
+        A = max(A * t * t, Avis * (1.0 - t));
+        aS = aMin;
+    }
     float halfQ = 6.0;
     if (uSpikes != 0 && A > 1.5) halfQ = 28.0;
     float half_px = min(aS * halfQ, 1400.0);
@@ -478,7 +491,8 @@ class Renderer:
                          ("uStarGain", p.star_gain), ("uSizeExp", p.star_size_exp), ("uPxScale", px_scale),
                          ("uSpikes", int(bool(p.spikes))), ("uSpikeAmt", p.spike_amount),
                          ("uHasVol", 1.0 if m.get("use_dust") else 0.0), ("uFCap", 60.0),
-                         ("uNearR", float(0.012 * m["W0"]))):
+                         ("uNearR", float(0.012 * m["W0"])), ("uSubGain", float(p.star_subpixel)), ("uAmbZ0", float(m["z0"] + 0.55 * m["E"])), ("uAmbZ1", float(m["z0"] + 1.05 * m["E"])), ("uFRef", float(m.get("fref", 1.0))),
+                         ("uWhiteRef", float(self.tone.get("white", 1.0)))):
                 _set(ps, n, v)
             _set(ps, "uTanP", (m["tx_p"], m["ty_p"]))
             _set(ps, "uCam", tuple(map(float, pos)))
