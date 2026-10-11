@@ -46,7 +46,7 @@ class Params:
     vol_size: int = 512
     vol_layers: int = 64
     pad_frac: float = 0.06
-    ambient_stars: int = 40000        # συνθετικά αστέρια γύρω από το σημείο εξόδου (0 = κανένα)
+    ambient_stars: int = 20000        # συνθετικά αστέρια γύρω από το σημείο εξόδου (0 = κανένα)
     # --- απόδοση ---
     exposure: float = 1.0
     neb_gain: float = 1.0

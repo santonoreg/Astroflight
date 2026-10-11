@@ -4,7 +4,7 @@ import os, sys, math, time, traceback
 import numpy as np
 import moderngl
 from PySide6.QtCore import Qt, QObject, QRunnable, QThreadPool, Signal, QTimer, QSettings
-from PySide6.QtGui import QSurfaceFormat, QImage, QPixmap, QFont
+from PySide6.QtGui import QSurfaceFormat, QImage, QPixmap, QFont, QPainter, QPen, QColor
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPushButton,
                                QLabel, QSlider, QDoubleSpinBox, QSpinBox, QCheckBox, QGroupBox, QFileDialog, QLineEdit,
@@ -156,7 +156,8 @@ class GLView(QOpenGLWidget):
 
 # ------------------------------------------------------------------------------------------------
 class ImagePreview(QLabel):
-    """Προεπισκόπηση 2D εικόνας (πριν χτιστεί η 3D σκηνή)."""
+    """Προεπισκόπηση 2D εικόνας. Σε «λειτουργία επιλογής» το κλικ ορίζει σημείο (κέντρο ενδιαφέροντος) και σχεδιάζεται σταυρόνημα."""
+    picked = Signal(float, float)          # (x, y) στο [0,1], y προς τα κάτω όπως στην εικόνα
 
     def __init__(self):
         super().__init__("Φόρτωσε μια αστροφωτογραφία για να ξεκινήσεις")
@@ -164,6 +165,9 @@ class ImagePreview(QLabel):
         self.setMinimumSize(520, 380)
         self.setStyleSheet("background:#0e0e12; color:#8a8a99; font-size:15px;")
         self._pm = None
+        self.pick_mode = False
+        self.marker: tuple[float, float] | None = None      # (x, y) στο [0,1]
+        self.hint = ""
 
     def set_array(self, rgb01: np.ndarray):
         a = (np.clip(rgb01, 0, 1) * 255.0 + 0.5).astype(np.uint8)
@@ -184,6 +188,55 @@ class ImagePreview(QLabel):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._fit()
+
+    def _img_rect(self):
+        pm = self.pixmap()
+        if pm is None or pm.isNull():
+            return None
+        w, h = pm.width() / pm.devicePixelRatio(), pm.height() / pm.devicePixelRatio()
+        return (self.width() - w) / 2.0, (self.height() - h) / 2.0, w, h
+
+    def set_pick_mode(self, on: bool, hint: str = ""):
+        self.pick_mode = bool(on)
+        self.hint = hint if on else ""
+        self.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+        self.update()
+
+    def mousePressEvent(self, e):
+        if not self.pick_mode or e.button() != Qt.LeftButton:
+            return super().mousePressEvent(e)
+        r = self._img_rect()
+        if r is None:
+            return
+        x0, y0, w, h = r
+        nx, ny = (e.position().x() - x0) / w, (e.position().y() - y0) / h
+        if 0.0 <= nx <= 1.0 and 0.0 <= ny <= 1.0:
+            self.marker = (nx, ny)
+            self.update()
+            self.picked.emit(float(nx), float(ny))
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        r = self._img_rect()
+        if r is None or (self.marker is None and not self.hint):
+            return
+        x0, y0, w, h = r
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        if self.marker is not None:
+            cx, cy = x0 + self.marker[0] * w, y0 + self.marker[1] * h
+            for col, wd in ((QColor(0, 0, 0, 200), 4.0), (QColor(255, 220, 80), 2.0)):
+                qp.setPen(QPen(col, wd))
+                qp.drawEllipse(int(cx - 16), int(cy - 16), 32, 32)
+                qp.drawLine(int(cx - 30), int(cy), int(cx - 8), int(cy))
+                qp.drawLine(int(cx + 8), int(cy), int(cx + 30), int(cy))
+                qp.drawLine(int(cx), int(cy - 30), int(cx), int(cy - 8))
+                qp.drawLine(int(cx), int(cy + 8), int(cx), int(cy + 30))
+        if self.hint:
+            qp.fillRect(int(x0), int(y0), int(w), 30, QColor(0, 0, 0, 170))
+            qp.setPen(QColor(255, 235, 150))
+            qp.drawText(int(x0) + 10, int(y0), int(w) - 20, 30, Qt.AlignVCenter | Qt.AlignLeft, self.hint)
+        qp.end()
 
 
 STEP_NAMES = ["Φόρτωση εικόνας", "Κλίμακα & θέση", "Αστέρια", "Βάθος & 3D σκηνή", "Εμφάνιση", "Πτήση & βίντεο"]
@@ -340,6 +393,7 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
         self.preview = ImagePreview()
+        self.preview.picked.connect(self._target_picked)
         self.rstack = QStackedWidget()
         self.rstack.addWidget(self.preview)
         self.rstack.addWidget(self.view)
@@ -780,6 +834,8 @@ class MainWindow(QMainWindow):
         self.logbox.verticalScrollBar().setValue(self.logbox.verticalScrollBar().maximum())
 
     def _param_changed(self, key):
+        if key in ("dive_auto_poi", "dive_fx", "dive_fy") and hasattr(self, "auto"):
+            self.auto.refresh_target_label()
         if key in DIVE_KEYS and self.proj.scene is not None and self.proj.path_kind == "dive":
             self._regen_timer.start(250)
         if key in STAR_KEYS:
@@ -1150,6 +1206,61 @@ class MainWindow(QMainWindow):
         self.view.set_time(0.0)
         if not self.view.playing:
             self._toggle_play()
+
+    # ================================================================== επιλογή κέντρου ενδιαφέροντος
+    def begin_pick_target(self):
+        p = self.proj
+        if p.lin is None:
+            QMessageBox.information(self, "AstroFlight", "Άνοιξε πρώτα μια εικόνα.")
+            return
+        self._pick_prev_widget = self.rstack.currentWidget()
+        self._pick_prev_play = (self.playbar.isVisible(), self.mouse_hint.isVisible())
+        if self.view.playing:
+            self._toggle_play()
+        self._show_preview()
+        self.rstack.setCurrentWidget(self.preview)
+        self.playbar.setVisible(False)
+        self.mouse_hint.setVisible(False)
+        pv = self.preview
+        pv.marker = None if p.p.dive_auto_poi else ((p.p.dive_fx + 1.0) / 2.0, (1.0 - p.p.dive_fy) / 2.0)
+        pv.set_pick_mode(True, "🎯 Κάνε κλικ στο κέντρο ενδιαφέροντος – προς εκεί θα πετάξει η κάμερα")
+        self.statusBar().showMessage("Κάνε κλικ πάνω στη φωτογραφία στο σημείο που θες να πετάξει η κάμερα.")
+
+    def end_pick_target(self):
+        self.preview.set_pick_mode(False)
+        prev = getattr(self, "_pick_prev_widget", None)
+        if prev is not None and prev is self.view and self.proj.scene is not None:
+            self.rstack.setCurrentWidget(self.view)
+            self.playbar.setVisible(True)
+            self.mouse_hint.setVisible(True)
+            self.view.update()
+
+    def _target_picked(self, nx, ny):
+        p = self.proj.p
+        p.dive_fx = float(min(max(2.0 * nx - 1.0, -0.9), 0.9))
+        p.dive_fy = float(min(max(1.0 - 2.0 * ny, -0.9), 0.9))
+        p.dive_auto_poi = False
+        self._refresh_rows()
+        self.auto.refresh_target_label()
+        self._log(f"Κέντρο ενδιαφέροντος: x={p.dive_fx:+.2f}, y={p.dive_fy:+.2f} (−1…1 από το κέντρο της φωτογραφίας).")
+        if self.proj.scene is not None:
+            self._regen_path()
+            self.view.set_time(0.0)
+            self.t_slider.blockSignals(True)
+            self.t_slider.setValue(0)
+            self.t_slider.blockSignals(False)
+            QTimer.singleShot(450, self.end_pick_target)          # μικρή καθυστέρηση ώστε να δεις το σταυρόνημα
+            self.statusBar().showMessage("Ο στόχος ορίστηκε. Πάτα «Αναπαραγωγή» για να δεις τη νέα πτήση.")
+        else:
+            self.statusBar().showMessage("Ο στόχος ορίστηκε. Πάτα «Έναρξη» για να φτιαχτεί η πτήση προς το σημείο αυτό.")
+
+    def use_auto_target(self):
+        self.proj.p.dive_auto_poi = True
+        self.preview.marker = None
+        self._refresh_rows()
+        self.auto.refresh_target_label()
+        if self.proj.scene is not None:
+            self._regen_path()
 
     def _tab_changed(self, i):
         if i == 0:

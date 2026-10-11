@@ -454,6 +454,22 @@ class AutoPanel(QWidget):
 
         # --- πτήση
         g, gl = self._group("3 · Πτήση (αλλάζει ζωντανά μετά την επεξεργασία)")
+        self.target_lbl = QLabel("")
+        self.target_lbl.setWordWrap(True)
+        gl.addWidget(self.target_lbl)
+        trow = QHBoxLayout()
+        b_pick = QPushButton("🎯 Διάλεξε κέντρο ενδιαφέροντος")
+        b_pick.setToolTip("Δείχνει τη φωτογραφία στο δεξί παράθυρο· κάνεις κλικ στο σημείο που θες να πετάξει η κάμερα")
+        b_pick.clicked.connect(self.win.begin_pick_target)
+        b_auto = QPushButton("↺ Αυτόματος")
+        b_auto.setToolTip("Η κάμερα πετά προς τη φωτεινότερη περιοχή του νεφελώματος")
+        b_auto.clicked.connect(self.win.use_auto_target)
+        trow.addWidget(b_pick, 3)
+        trow.addWidget(b_auto, 1)
+        gl.addLayout(trow)
+        gl.addWidget(_help("Η κάμερα πετά σε ευθεία γραμμή από το σημείο λήψης προς το σημείο που θα μαρκάρεις πάνω στη φωτογραφία και συνεχίζει μέσα από το νεφέλωμα. "
+                           "Διάλεξε π.χ. την καρδιά του αντικειμένου, ένα σμήνος ή μια κοιλότητα. Μπορείς να το αλλάξεις και μετά την επεξεργασία: η πτήση ξαναϋπολογίζεται αμέσως."))
+        self._inputs_extra = [b_pick, b_auto]
         self.prows = []
         for spec in (
             ("duration", "Διάρκεια (s)", "f", 6, 180, 1,
@@ -487,6 +503,7 @@ class AutoPanel(QWidget):
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         sa.setWidget(w)
         outer.addWidget(sa)
+        self.refresh_target_label()
         self._inputs = [self.chk_astap, self.ed_astap, self.chk_starnet, self.ed_starnet, self.chk_gaia, self.sp_scale,
                         self.sp_focal, self.sp_pix, self.ed_object, self.cb_stretch, self.chk_dist, btn]
 
@@ -561,6 +578,13 @@ class AutoPanel(QWidget):
         self._export_finished('<span style="color:#e06060;"><b>✖ Η εξαγωγή απέτυχε:</b> ' + msg.split("\x00")[0].strip().replace("\n", "<br>") + "</span>")
         self.win._log("ΣΦΑΛΜΑ εξαγωγής: " + msg.replace("\x00", ""))
 
+    def refresh_target_label(self):
+        p = self.proj.p
+        if p.dive_auto_poi:
+            self.target_lbl.setText("Στόχος: <b>αυτόματος</b> (η φωτεινότερη περιοχή του νεφελώματος)")
+        else:
+            self.target_lbl.setText(f"Στόχος: <b>δικός σου</b> – x = {p.dive_fx:+.2f}, y = {p.dive_fy:+.2f} (από το κέντρο της φωτογραφίας)")
+
     # ------------------------------------------------------------------ Gaia
     def set_gaia_file(self, path):
         self.proj.gaia_file = path
@@ -612,7 +636,7 @@ class AutoPanel(QWidget):
 
     def set_busy(self, busy: bool):
         running = self.token is not None
-        for w in self._inputs:
+        for w in self._inputs + getattr(self, "_inputs_extra", []):
             w.setEnabled(not busy)
         self.btn_run.setEnabled(not busy)
         self.btn_cancel.setEnabled(busy and running)
