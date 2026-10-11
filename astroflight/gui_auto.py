@@ -202,7 +202,7 @@ class AutoPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         w = QWidget()
         lay = QVBoxLayout(w)
-        intro = QLabel("Άνοιξε τη φωτογραφία σου και πάτα «Έναρξη». Η εφαρμογή κάνει μόνη της όλα τα βήματα: "
+        intro = QLabel("Άνοιξε τη φωτογραφία σου, διάλεξε (αν θες) το κέντρο ενδιαφέροντος και πάτα «Έναρξη» (κάτω, είναι πάντα ορατό). Η εφαρμογή κάνει μόνη της όλα τα βήματα: "
                        "βρίσκει πού κοιτάζει η φωτογραφία (ASTAP), χωρίζει τα αστέρια από το νεφέλωμα (StarNet), "
                        "βρίσκει πραγματικές αποστάσεις αστεριών (Gaia), χτίζει το 3D και σχεδιάζει την πτήση. "
                        "Αν λείπει κάποιο εργαλείο ή αποτύχει ένα βήμα, συνεχίζει με εφεδρική λύση και σε ενημερώνει.")
@@ -219,22 +219,171 @@ class AutoPanel(QWidget):
         self.img_label.setWordWrap(True)
         lay.addWidget(self.img_label)
 
-        # --- εκτέλεση
-        row = QHBoxLayout()
-        self.btn_run = QPushButton("▶  Έναρξη αυτόματης επεξεργασίας")
-        self.btn_run.setMinimumHeight(46)
+        # --- κέντρο ενδιαφέροντος (πρώτη επιλογή)
+        g, gl = self._group("🎯 1 · Κέντρο ενδιαφέροντος")
+        self.target_lbl = QLabel("")
+        self.target_lbl.setWordWrap(True)
+        gl.addWidget(self.target_lbl)
+        trow = QHBoxLayout()
+        b_pick = QPushButton("🎯 Διάλεξε κέντρο ενδιαφέροντος")
+        b_pick.setToolTip("Δείχνει τη φωτογραφία στο δεξί παράθυρο· κάνεις κλικ στο σημείο που θες να πετάξει η κάμερα")
+        b_pick.clicked.connect(self.win.begin_pick_target)
+        b_auto = QPushButton("↺ Αυτόματος")
+        b_auto.setToolTip("Η κάμερα πετά προς τη φωτεινότερη περιοχή του νεφελώματος")
+        b_auto.clicked.connect(self.win.use_auto_target)
+        trow.addWidget(b_pick, 3)
+        trow.addWidget(b_auto, 1)
+        gl.addLayout(trow)
+        gl.addWidget(_help("Η κάμερα πετά σε ευθεία γραμμή από το σημείο λήψης προς το σημείο που θα μαρκάρεις πάνω στη φωτογραφία και συνεχίζει μέσα από το νεφέλωμα. "
+                           "Διάλεξε π.χ. την καρδιά του αντικειμένου, ένα σμήνος ή μια κοιλότητα. Μπορείς να το αλλάξεις και μετά την επεξεργασία: η πτήση ξαναϋπολογίζεται αμέσως."))
+        self._inputs_extra = [b_pick, b_auto]
+        lay.addWidget(g)
+
+        sep = QLabel("Ρυθμίσεις")
+        sep.setStyleSheet("font-weight:bold; margin-top:8px;")
+        lay.addWidget(sep)
+        # --- εργαλεία
+        g, gl = self._group("2 · Εργαλεία")
+        self.chk_astap, self.ed_astap, self.upd_astap = self._tool_row(
+            gl, "ASTAP – αστρομετρία (plate solve)",
+            "Αναγνωρίζει τα αστέρια της φωτογραφίας και βρίσκει ΠΟΥ στον ουρανό κοιτάζει και με ποια κλίμακα. "
+            "Χωρίς αυτό δεν μπορούμε να ξέρουμε ποια αστέρια είναι κοντά και ποια μακριά.",
+            "astap_path", ws.find_astap, r"π.χ. C:\Program Files\astap\astap.exe",
+            'Κατέβασέ το από <a href="https://hnsky.org/astap.htm">hnsky.org/astap.htm</a> και εγκατάστησε ΚΑΙ μία βάση αστεριών (D50 ή D20).')
+        self.chk_starnet, self.ed_starnet, self.upd_starnet = self._tool_row(
+            gl, "StarNet – αφαίρεση αστεριών",
+            "Αφαιρεί τα αστέρια από την εικόνα ώστε να μείνει μόνο το νεφέλωμα. Τα αστέρια μπαίνουν ξανά ως 3D σημεία στις σωστές αποστάσεις. "
+            "Χωρίς StarNet χρησιμοποιείται απλούστερη μέθοδος (αφήνει σκούρα σημάδια γύρω από φωτεινά αστέρια).",
+            "starnet_path", sn.find_starnet, r"π.χ. C:\Program Files\StarNet2\bin\starnet2.exe",
+            'Κατέβασέ το (starnet2, command line) από <a href="https://starnetastro.com/cli-tools/starnet/">starnetastro.com</a>.')
+        self.chk_gaia = QCheckBox("Gaia – πραγματικές αποστάσεις αστεριών")
+        self.chk_gaia.setChecked(True)
         f = QFont()
         f.setBold(True)
-        f.setPointSize(11)
-        self.btn_run.setFont(f)
-        self.btn_run.clicked.connect(self.start)
-        self.btn_cancel = QPushButton("■ Ακύρωση")
-        self.btn_cancel.setMinimumHeight(46)
-        self.btn_cancel.setEnabled(False)
-        self.btn_cancel.clicked.connect(self.cancel)
-        row.addWidget(self.btn_run, 3)
-        row.addWidget(self.btn_cancel, 1)
-        lay.addLayout(row)
+        self.chk_gaia.setFont(f)
+        gl.addWidget(self.chk_gaia)
+        gl.addWidget(_help("Κατεβάζει από τον κατάλογο Gaia DR3 τις μετρημένες αποστάσεις των αστεριών του πεδίου σου. "
+                           "Απαιτεί επιτυχημένο plate solve. Αν δεν υπάρχει internet χρησιμοποιούνται εύλογες συνθετικές αποστάσεις."))
+        grow = QHBoxLayout()
+        b_diag = QPushButton("🔍 Έλεγχος σύνδεσης")
+        b_diag.setToolTip("Δοκιμάζει αν φτάνει η εφαρμογή στους servers του Gaia (ESA, ARI Heidelberg, VizieR) και εξηγεί τι δεν δουλεύει")
+        b_diag.clicked.connect(self.check_gaia_connection)
+        b_file = QPushButton("📄 Τοπικό αρχείο Gaia…")
+        b_file.setToolTip("Φόρτωσε CSV/FITS/VOTable που κατέβασες εσύ από το Gaia archive (δεν χρειάζεται internet στην εφαρμογή)")
+        b_file.clicked.connect(self.pick_gaia_file)
+        b_clr = QPushButton("✖")
+        b_clr.setFixedWidth(30)
+        b_clr.setToolTip("Αφαίρεση τοπικού αρχείου (θα χρησιμοποιηθεί internet)")
+        b_clr.clicked.connect(lambda: self.set_gaia_file(None))
+        b_q = QPushButton("📋 Ερώτημα Gaia archive")
+        b_q.setToolTip("Αντιγράφει το ερώτημα ADQL για τη δική σου περιοχή του ουρανού (χρειάζεται πρώτα επιτυχημένο plate solve)")
+        b_q.clicked.connect(self.copy_gaia_query)
+        grow.addWidget(b_diag)
+        grow.addWidget(b_q)
+        gl.addLayout(grow)
+        grow2 = QHBoxLayout()
+        grow2.addWidget(b_file, 1)
+        grow2.addWidget(b_clr)
+        gl.addLayout(grow2)
+        self.gaia_file_lbl = QLabel("")
+        self.gaia_file_lbl.setWordWrap(True)
+        gl.addWidget(self.gaia_file_lbl)
+        gl.addWidget(_help("Αν η εφαρμογή δεν μπορεί να κατεβάσει Gaia (firewall/proxy): (1) πάτα «Έλεγχος σύνδεσης» για να δεις γιατί, ή (2) μετά από ένα επιτυχημένο "
+                           "plate solve πάτα «Ερώτημα για το Gaia archive», επικόλλησέ το στο <a href=\"https://gea.esac.esa.int/archive/\">gea.esac.esa.int/archive</a> "
+                           "(Search → Advanced ADQL), κατέβασε το αποτέλεσμα ως CSV και φόρτωσέ το εδώ. Ολόκληρο το Gaia (~1.5 TB) δεν χρειάζεται: μόνο η μικρή περιοχή της φωτογραφίας σου."))
+        lay.addWidget(g)
+
+        # --- πληροφορίες εικόνας
+        g, gl = self._group("3 · Τι ξέρεις για την εικόνα (όλα προαιρετικά)")
+        form = QFormLayout()
+        self.sp_scale = QDoubleSpinBox()
+        self.sp_scale.setRange(0.0, 600.0)
+        self.sp_scale.setDecimals(3)
+        self.sp_scale.setSpecialValueText("άγνωστη")
+        self.sp_scale.setSuffix(' "/px')
+        form.addRow("Κλίμακα εικόνας:", self.sp_scale)
+        gl.addLayout(form)
+        gl.addWidget(_help("Πόσα δευτερόλεπτα τόξου (\") καλύπτει κάθε pixel. Αν την ξέρεις, ο ASTAP λύνει πολύ πιο γρήγορα· αν είναι «άγνωστη» "
+                           "θα την ανακαλύψει μόνος του. Είναι απαραίτητη μόνο όταν ΔΕΝ υπάρχει ASTAP (τότε καθορίζει το μέγεθος του αντικειμένου)."))
+        opt = QHBoxLayout()
+        self.sp_focal = QDoubleSpinBox()
+        self.sp_focal.setRange(1, 20000)
+        self.sp_focal.setValue(500)
+        self.sp_focal.setSuffix(" mm")
+        self.sp_pix = QDoubleSpinBox()
+        self.sp_pix.setRange(0.5, 50)
+        self.sp_pix.setDecimals(2)
+        self.sp_pix.setValue(3.76)
+        self.sp_pix.setSuffix(" µm")
+        btn = QPushButton("Υπολογισμός από τα οπτικά")
+        btn.clicked.connect(lambda: self.sp_scale.setValue(ws.scale_from_optics(self.sp_focal.value(), self.sp_pix.value())))
+        opt.addWidget(QLabel("Εστιακή:"))
+        opt.addWidget(self.sp_focal)
+        opt.addWidget(QLabel("Pixel:"))
+        opt.addWidget(self.sp_pix)
+        opt.addWidget(btn)
+        gl.addLayout(opt)
+        gl.addWidget(_help("Κλίμακα = 206.265 × μέγεθος pixel (µm) ÷ εστιακή απόσταση (mm). Αν έκανες binning ή μίκρυνες την εικόνα, πολλαπλασίασε ανάλογα."))
+        form = QFormLayout()
+        self.ed_object = QLineEdit()
+        self.ed_object.setPlaceholderText("π.χ. Rosette Nebula, M42")
+        form.addRow("Όνομα αντικειμένου:", self.ed_object)
+        gl.addLayout(form)
+        gl.addWidget(_help("Βοηθά τον ASTAP να ξέρει πού να ψάξει στον ουρανό (ταχύτερη και πιο αξιόπιστη λύση) και την εφαρμογή να βρει την απόσταση του "
+                           "αντικειμένου. Γνωστά ονόματα βρίσκονται και χωρίς internet."))
+        form = QFormLayout()
+        self.cb_stretch = QComboBox()
+        self.cb_stretch.addItems(["Αυτόματα", "Ναι – τελική εικόνα", "Όχι – γραμμικά (linear)"])
+        self.cb_stretch.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cb_stretch.setMinimumContentsLength(12)
+        form.addRow("Η εικόνα είναι τεντωμένη;", self.cb_stretch)
+        gl.addLayout(form)
+        gl.addWidget(_help("Οι τελικές, επεξεργασμένες εικόνες είναι «τεντωμένες» (non-linear). Τα ακατέργαστα stacked δεδομένα είναι σκοτεινά και γραμμικά. "
+                           "Η εφαρμογή το εντοπίζει μόνη της από τη φωτεινότητα· άλλαξέ το μόνο αν το μαντέψει λάθος."))
+        row = QHBoxLayout()
+        self.chk_dist = QCheckBox("Απόσταση αντικειμένου αυτόματα")
+        self.chk_dist.setChecked(True)
+        self.sp_dist = QDoubleSpinBox()
+        self.sp_dist.setRange(5, 30000)
+        self.sp_dist.setDecimals(0)
+        self.sp_dist.setValue(self.proj.p.object_distance_pc)
+        self.sp_dist.setSuffix(" pc")
+        self.sp_dist.setEnabled(False)
+        self.chk_dist.toggled.connect(lambda on: self.sp_dist.setEnabled(not on))
+        row.addWidget(self.chk_dist)
+        row.addWidget(self.sp_dist)
+        gl.addLayout(row)
+        gl.addWidget(_help("Πόσο μακριά είναι το νεφέλωμα (1 pc = 3.26 έτη φωτός). Αυτόματα: από τα δεδομένα Gaia ή από κατάλογο γνωστών αντικειμένων. "
+                           "Επηρεάζει την κλίμακα του 3D χώρου και πόσο γρήγορα «περνούν» τα αστέρια."))
+        lay.addWidget(g)
+
+        # --- πτήση
+        g, gl = self._group("4 · Πτήση (αλλάζει ζωντανά μετά την επεξεργασία)")
+        self.prows = []
+        for spec in (
+            ("duration", "Διάρκεια (s)", "f", 6, 180, 1,
+             "Πόσο διαρκεί το βίντεο. Μεγαλύτερη διάρκεια = πιο αργή κίνηση και πιο αργό ζουμ (π.χ. 30 s ήρεμο, 60 s πολύ αργό)."),
+            ("dive_zoom_rate", "Μέγιστη ταχύτητα ζουμ", "f", 0.05, 1.0, 0.01,
+             "Πόσο γρήγορα επιτρέπεται να μεγαλώνει το νεφέλωμα στο κάδρο (ln ανά δευτερόλεπτο: 0.1 = πολύ αργά, 0.25 = ήρεμα, 0.5 = γρήγορα). "
+             "Αν η διάρκεια είναι πολύ μικρή για να τηρηθεί, το όριο αυξάνεται αυτόματα."),
+            ("dive_zoom", "Zoom προσέγγισης (×)", "f", 1.0, 8.0, 0.1,
+             "Πόσες φορές μεγαλύτερο φαίνεται το νεφέλωμα στο κάδρο όταν η κάμερα φτάνει στην είσοδό του. 1 = μένει όσο στη φωτογραφία (έντονη παράλλαξη, "
+             "όλο το αντικείμενο φαίνεται), μεγάλο = το νεφέλωμα «ξεχειλίζει» από το κάδρο."),
+            ("dive_fov_max", "Μέγιστο οπτικό πεδίο (°)", "f", 20, 100, 1,
+             "Πόσο ανοίγει το κάδρο όταν η κάμερα μπαίνει μέσα στα νέφη. Μεγαλύτερο = βλέπεις περισσότερα στρώματα γύρω σου, μικρότερο = πιο «τηλεσκοπικό» πλάνο."),
+            ("dive_exit", "Έξοδος από το νεφέλωμα (× πλάτος)", "f", 0.0, 1.5, 0.05,
+             "Η κάμερα συνεχίζει πέρα από την πίσω πλευρά του νεφελώματος και σταματά αυτή την απόσταση έξω, σε πεδίο μόνο με αστέρια. 0 = μένει μέσα στα νέφη (τότε ισχύει το «Βάθος τέλους»)."),
+            ("dive_depth", "Βάθος τέλους (0 μπροστά … 1 πίσω)", "f", 0.0, 1.0, 0.01,
+             "Πόσο μέσα στα νέφη τελειώνει η πτήση. Μικρή τιμή = μένεις στα εξωτερικά, φωτεινά στρώματα· μεγάλη = μπαίνεις βαθιά (πιο σκοτεινά)."),
+            ("dive_auto_poi", "Αυτόματος στόχος", "b", 0, 1, 0,
+             "Η κάμερα πετά προς τη φωτεινότερη περιοχή. Ξετσέκαρέ το για να διαλέξεις εσύ σημείο (βήμα «Πτήση & βίντεο» → στόχος X/Y)."),
+            ("depth_extent", "Συνολικό βάθος νεφελώματος (× πλάτος)", "f", 0.2, 3, 0.05,
+             "Πόσο «βαθύ» είναι το νεφέλωμα. Μεγαλύτερο = πιο έντονο 3D και παράλλαξη (εφαρμόζεται με νέα «Έναρξη» – γρήγορη, δεν ξανατρέχει StarNet)."),
+        ):
+            r = ParamRow(self.proj.p, spec, self.win._param_changed)
+            self.win.rows.append(r)
+            gl.addWidget(r)
+        lay.addWidget(g)
 
         # --- πρόοδος
         g, gl = self._group("Πρόοδος")
@@ -248,12 +397,8 @@ class AutoPanel(QWidget):
             self.step_lbls[sid] = l
             gl.addWidget(l)
             self._set_step(sid, "pending", "")
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1000)
-        gl.addWidget(self.bar)
-        self.time_lbl = QLabel("")
-        gl.addWidget(self.time_lbl)
         lay.addWidget(g)
+        self.progress_group = g
         self.result_lbl = QLabel("")
         self.result_lbl.setWordWrap(True)
         self.result_lbl.setTextFormat(Qt.RichText)
@@ -334,175 +479,41 @@ class AutoPanel(QWidget):
         self.exp_group = g
 
 
-        sep = QLabel("Ρυθμίσεις")
-        sep.setStyleSheet("font-weight:bold; margin-top:8px;")
-        lay.addWidget(sep)
-        # --- εργαλεία
-        g, gl = self._group("1 · Εργαλεία")
-        self.chk_astap, self.ed_astap, self.upd_astap = self._tool_row(
-            gl, "ASTAP – αστρομετρία (plate solve)",
-            "Αναγνωρίζει τα αστέρια της φωτογραφίας και βρίσκει ΠΟΥ στον ουρανό κοιτάζει και με ποια κλίμακα. "
-            "Χωρίς αυτό δεν μπορούμε να ξέρουμε ποια αστέρια είναι κοντά και ποια μακριά.",
-            "astap_path", ws.find_astap, r"π.χ. C:\Program Files\astap\astap.exe",
-            'Κατέβασέ το από <a href="https://hnsky.org/astap.htm">hnsky.org/astap.htm</a> και εγκατάστησε ΚΑΙ μία βάση αστεριών (D50 ή D20).')
-        self.chk_starnet, self.ed_starnet, self.upd_starnet = self._tool_row(
-            gl, "StarNet – αφαίρεση αστεριών",
-            "Αφαιρεί τα αστέρια από την εικόνα ώστε να μείνει μόνο το νεφέλωμα. Τα αστέρια μπαίνουν ξανά ως 3D σημεία στις σωστές αποστάσεις. "
-            "Χωρίς StarNet χρησιμοποιείται απλούστερη μέθοδος (αφήνει σκούρα σημάδια γύρω από φωτεινά αστέρια).",
-            "starnet_path", sn.find_starnet, r"π.χ. C:\Program Files\StarNet2\bin\starnet2.exe",
-            'Κατέβασέ το (starnet2, command line) από <a href="https://starnetastro.com/cli-tools/starnet/">starnetastro.com</a>.')
-        self.chk_gaia = QCheckBox("Gaia – πραγματικές αποστάσεις αστεριών")
-        self.chk_gaia.setChecked(True)
-        f = QFont()
-        f.setBold(True)
-        self.chk_gaia.setFont(f)
-        gl.addWidget(self.chk_gaia)
-        gl.addWidget(_help("Κατεβάζει από τον κατάλογο Gaia DR3 τις μετρημένες αποστάσεις των αστεριών του πεδίου σου. "
-                           "Απαιτεί επιτυχημένο plate solve. Αν δεν υπάρχει internet χρησιμοποιούνται εύλογες συνθετικές αποστάσεις."))
-        grow = QHBoxLayout()
-        b_diag = QPushButton("🔍 Έλεγχος σύνδεσης")
-        b_diag.setToolTip("Δοκιμάζει αν φτάνει η εφαρμογή στους servers του Gaia (ESA, ARI Heidelberg, VizieR) και εξηγεί τι δεν δουλεύει")
-        b_diag.clicked.connect(self.check_gaia_connection)
-        b_file = QPushButton("📄 Τοπικό αρχείο Gaia…")
-        b_file.setToolTip("Φόρτωσε CSV/FITS/VOTable που κατέβασες εσύ από το Gaia archive (δεν χρειάζεται internet στην εφαρμογή)")
-        b_file.clicked.connect(self.pick_gaia_file)
-        b_clr = QPushButton("✖")
-        b_clr.setFixedWidth(30)
-        b_clr.setToolTip("Αφαίρεση τοπικού αρχείου (θα χρησιμοποιηθεί internet)")
-        b_clr.clicked.connect(lambda: self.set_gaia_file(None))
-        b_q = QPushButton("📋 Ερώτημα Gaia archive")
-        b_q.setToolTip("Αντιγράφει το ερώτημα ADQL για τη δική σου περιοχή του ουρανού (χρειάζεται πρώτα επιτυχημένο plate solve)")
-        b_q.clicked.connect(self.copy_gaia_query)
-        grow.addWidget(b_diag)
-        grow.addWidget(b_q)
-        gl.addLayout(grow)
-        grow2 = QHBoxLayout()
-        grow2.addWidget(b_file, 1)
-        grow2.addWidget(b_clr)
-        gl.addLayout(grow2)
-        self.gaia_file_lbl = QLabel("")
-        self.gaia_file_lbl.setWordWrap(True)
-        gl.addWidget(self.gaia_file_lbl)
-        gl.addWidget(_help("Αν η εφαρμογή δεν μπορεί να κατεβάσει Gaia (firewall/proxy): (1) πάτα «Έλεγχος σύνδεσης» για να δεις γιατί, ή (2) μετά από ένα επιτυχημένο "
-                           "plate solve πάτα «Ερώτημα για το Gaia archive», επικόλλησέ το στο <a href=\"https://gea.esac.esa.int/archive/\">gea.esac.esa.int/archive</a> "
-                           "(Search → Advanced ADQL), κατέβασε το αποτέλεσμα ως CSV και φόρτωσέ το εδώ. Ολόκληρο το Gaia (~1.5 TB) δεν χρειάζεται: μόνο η μικρή περιοχή της φωτογραφίας σου."))
-        lay.addWidget(g)
-
-        # --- πληροφορίες εικόνας
-        g, gl = self._group("2 · Τι ξέρεις για την εικόνα (όλα προαιρετικά)")
-        form = QFormLayout()
-        self.sp_scale = QDoubleSpinBox()
-        self.sp_scale.setRange(0.0, 600.0)
-        self.sp_scale.setDecimals(3)
-        self.sp_scale.setSpecialValueText("άγνωστη")
-        self.sp_scale.setSuffix(' "/px')
-        form.addRow("Κλίμακα εικόνας:", self.sp_scale)
-        gl.addLayout(form)
-        gl.addWidget(_help("Πόσα δευτερόλεπτα τόξου (\") καλύπτει κάθε pixel. Αν την ξέρεις, ο ASTAP λύνει πολύ πιο γρήγορα· αν είναι «άγνωστη» "
-                           "θα την ανακαλύψει μόνος του. Είναι απαραίτητη μόνο όταν ΔΕΝ υπάρχει ASTAP (τότε καθορίζει το μέγεθος του αντικειμένου)."))
-        opt = QHBoxLayout()
-        self.sp_focal = QDoubleSpinBox()
-        self.sp_focal.setRange(1, 20000)
-        self.sp_focal.setValue(500)
-        self.sp_focal.setSuffix(" mm")
-        self.sp_pix = QDoubleSpinBox()
-        self.sp_pix.setRange(0.5, 50)
-        self.sp_pix.setDecimals(2)
-        self.sp_pix.setValue(3.76)
-        self.sp_pix.setSuffix(" µm")
-        btn = QPushButton("Υπολογισμός από τα οπτικά")
-        btn.clicked.connect(lambda: self.sp_scale.setValue(ws.scale_from_optics(self.sp_focal.value(), self.sp_pix.value())))
-        opt.addWidget(QLabel("Εστιακή:"))
-        opt.addWidget(self.sp_focal)
-        opt.addWidget(QLabel("Pixel:"))
-        opt.addWidget(self.sp_pix)
-        opt.addWidget(btn)
-        gl.addLayout(opt)
-        gl.addWidget(_help("Κλίμακα = 206.265 × μέγεθος pixel (µm) ÷ εστιακή απόσταση (mm). Αν έκανες binning ή μίκρυνες την εικόνα, πολλαπλασίασε ανάλογα."))
-        form = QFormLayout()
-        self.ed_object = QLineEdit()
-        self.ed_object.setPlaceholderText("π.χ. Rosette Nebula, M42")
-        form.addRow("Όνομα αντικειμένου:", self.ed_object)
-        gl.addLayout(form)
-        gl.addWidget(_help("Βοηθά τον ASTAP να ξέρει πού να ψάξει στον ουρανό (ταχύτερη και πιο αξιόπιστη λύση) και την εφαρμογή να βρει την απόσταση του "
-                           "αντικειμένου. Γνωστά ονόματα βρίσκονται και χωρίς internet."))
-        form = QFormLayout()
-        self.cb_stretch = QComboBox()
-        self.cb_stretch.addItems(["Αυτόματα", "Ναι – τελική εικόνα", "Όχι – γραμμικά (linear)"])
-        self.cb_stretch.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.cb_stretch.setMinimumContentsLength(12)
-        form.addRow("Η εικόνα είναι τεντωμένη;", self.cb_stretch)
-        gl.addLayout(form)
-        gl.addWidget(_help("Οι τελικές, επεξεργασμένες εικόνες είναι «τεντωμένες» (non-linear). Τα ακατέργαστα stacked δεδομένα είναι σκοτεινά και γραμμικά. "
-                           "Η εφαρμογή το εντοπίζει μόνη της από τη φωτεινότητα· άλλαξέ το μόνο αν το μαντέψει λάθος."))
-        row = QHBoxLayout()
-        self.chk_dist = QCheckBox("Απόσταση αντικειμένου αυτόματα")
-        self.chk_dist.setChecked(True)
-        self.sp_dist = QDoubleSpinBox()
-        self.sp_dist.setRange(5, 30000)
-        self.sp_dist.setDecimals(0)
-        self.sp_dist.setValue(self.proj.p.object_distance_pc)
-        self.sp_dist.setSuffix(" pc")
-        self.sp_dist.setEnabled(False)
-        self.chk_dist.toggled.connect(lambda on: self.sp_dist.setEnabled(not on))
-        row.addWidget(self.chk_dist)
-        row.addWidget(self.sp_dist)
-        gl.addLayout(row)
-        gl.addWidget(_help("Πόσο μακριά είναι το νεφέλωμα (1 pc = 3.26 έτη φωτός). Αυτόματα: από τα δεδομένα Gaia ή από κατάλογο γνωστών αντικειμένων. "
-                           "Επηρεάζει την κλίμακα του 3D χώρου και πόσο γρήγορα «περνούν» τα αστέρια."))
-        lay.addWidget(g)
-
-        # --- πτήση
-        g, gl = self._group("3 · Πτήση (αλλάζει ζωντανά μετά την επεξεργασία)")
-        self.target_lbl = QLabel("")
-        self.target_lbl.setWordWrap(True)
-        gl.addWidget(self.target_lbl)
-        trow = QHBoxLayout()
-        b_pick = QPushButton("🎯 Διάλεξε κέντρο ενδιαφέροντος")
-        b_pick.setToolTip("Δείχνει τη φωτογραφία στο δεξί παράθυρο· κάνεις κλικ στο σημείο που θες να πετάξει η κάμερα")
-        b_pick.clicked.connect(self.win.begin_pick_target)
-        b_auto = QPushButton("↺ Αυτόματος")
-        b_auto.setToolTip("Η κάμερα πετά προς τη φωτεινότερη περιοχή του νεφελώματος")
-        b_auto.clicked.connect(self.win.use_auto_target)
-        trow.addWidget(b_pick, 3)
-        trow.addWidget(b_auto, 1)
-        gl.addLayout(trow)
-        gl.addWidget(_help("Η κάμερα πετά σε ευθεία γραμμή από το σημείο λήψης προς το σημείο που θα μαρκάρεις πάνω στη φωτογραφία και συνεχίζει μέσα από το νεφέλωμα. "
-                           "Διάλεξε π.χ. την καρδιά του αντικειμένου, ένα σμήνος ή μια κοιλότητα. Μπορείς να το αλλάξεις και μετά την επεξεργασία: η πτήση ξαναϋπολογίζεται αμέσως."))
-        self._inputs_extra = [b_pick, b_auto]
-        self.prows = []
-        for spec in (
-            ("duration", "Διάρκεια (s)", "f", 6, 180, 1,
-             "Πόσο διαρκεί το βίντεο. Μεγαλύτερη διάρκεια = πιο αργή κίνηση και πιο αργό ζουμ (π.χ. 30 s ήρεμο, 60 s πολύ αργό)."),
-            ("dive_zoom_rate", "Μέγιστη ταχύτητα ζουμ", "f", 0.05, 1.0, 0.01,
-             "Πόσο γρήγορα επιτρέπεται να μεγαλώνει το νεφέλωμα στο κάδρο (ln ανά δευτερόλεπτο: 0.1 = πολύ αργά, 0.25 = ήρεμα, 0.5 = γρήγορα). "
-             "Αν η διάρκεια είναι πολύ μικρή για να τηρηθεί, το όριο αυξάνεται αυτόματα."),
-            ("dive_zoom", "Zoom προσέγγισης (×)", "f", 1.0, 8.0, 0.1,
-             "Πόσες φορές μεγαλύτερο φαίνεται το νεφέλωμα στο κάδρο όταν η κάμερα φτάνει στην είσοδό του. 1 = μένει όσο στη φωτογραφία (έντονη παράλλαξη, "
-             "όλο το αντικείμενο φαίνεται), μεγάλο = το νεφέλωμα «ξεχειλίζει» από το κάδρο."),
-            ("dive_fov_max", "Μέγιστο οπτικό πεδίο (°)", "f", 20, 100, 1,
-             "Πόσο ανοίγει το κάδρο όταν η κάμερα μπαίνει μέσα στα νέφη. Μεγαλύτερο = βλέπεις περισσότερα στρώματα γύρω σου, μικρότερο = πιο «τηλεσκοπικό» πλάνο."),
-            ("dive_exit", "Έξοδος από το νεφέλωμα (× πλάτος)", "f", 0.0, 1.5, 0.05,
-             "Η κάμερα συνεχίζει πέρα από την πίσω πλευρά του νεφελώματος και σταματά αυτή την απόσταση έξω, σε πεδίο μόνο με αστέρια. 0 = μένει μέσα στα νέφη (τότε ισχύει το «Βάθος τέλους»)."),
-            ("dive_depth", "Βάθος τέλους (0 μπροστά … 1 πίσω)", "f", 0.0, 1.0, 0.01,
-             "Πόσο μέσα στα νέφη τελειώνει η πτήση. Μικρή τιμή = μένεις στα εξωτερικά, φωτεινά στρώματα· μεγάλη = μπαίνεις βαθιά (πιο σκοτεινά)."),
-            ("dive_auto_poi", "Αυτόματος στόχος", "b", 0, 1, 0,
-             "Η κάμερα πετά προς τη φωτεινότερη περιοχή. Ξετσέκαρέ το για να διαλέξεις εσύ σημείο (βήμα «Πτήση & βίντεο» → στόχος X/Y)."),
-            ("depth_extent", "Συνολικό βάθος νεφελώματος (× πλάτος)", "f", 0.2, 3, 0.05,
-             "Πόσο «βαθύ» είναι το νεφέλωμα. Μεγαλύτερο = πιο έντονο 3D και παράλλαξη (εφαρμόζεται με νέα «Έναρξη» – γρήγορη, δεν ξανατρέχει StarNet)."),
-        ):
-            r = ParamRow(self.proj.p, spec, self.win._param_changed)
-            self.win.rows.append(r)
-            gl.addWidget(r)
-        lay.addWidget(g)
-
         lay.addStretch(1)
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setFrameShape(QScrollArea.NoFrame)
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         sa.setWidget(w)
-        outer.addWidget(sa)
+        outer.addWidget(sa, 1)
+        self.sa = sa
+
+        # --- σταθερό υποσέλιδο: κουμπί έναρξης + πρόοδος (φαίνονται πάντα, χωρίς scroll)
+        foot = QWidget()
+        fl = QVBoxLayout(foot)
+        fl.setContentsMargins(8, 6, 8, 8)
+        row = QHBoxLayout()
+        self.btn_run = QPushButton("▶  Έναρξη αυτόματης επεξεργασίας")
+        self.btn_run.setMinimumHeight(46)
+        f = QFont()
+        f.setBold(True)
+        f.setPointSize(11)
+        self.btn_run.setFont(f)
+        self.btn_run.clicked.connect(self.start)
+        self.btn_cancel = QPushButton("■ Ακύρωση")
+        self.btn_cancel.setMinimumHeight(46)
+        self.btn_cancel.setEnabled(False)
+        self.btn_cancel.clicked.connect(self.cancel)
+        row.addWidget(self.btn_run, 3)
+        row.addWidget(self.btn_cancel, 1)
+        fl.addLayout(row)
+
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        fl.addWidget(self.bar)
+        self.time_lbl = QLabel("")
+        fl.addWidget(self.time_lbl)
+        outer.addWidget(foot)
         self.refresh_target_label()
         self._inputs = [self.chk_astap, self.ed_astap, self.chk_starnet, self.ed_starnet, self.chk_gaia, self.sp_scale,
                         self.sp_focal, self.sp_pix, self.ed_object, self.cb_stretch, self.chk_dist, btn]
@@ -695,6 +706,7 @@ class AutoPanel(QWidget):
         self._timer.start(500)
         self.win._set_busy(True)
         self.btn_cancel.setEnabled(True)
+        self.sa.ensureWidgetVisible(self.progress_group, 0, 20)
         self.win.pool.start(self.worker)
 
     def cancel(self):
@@ -734,6 +746,7 @@ class AutoPanel(QWidget):
         self.btn_export.setVisible(True)
         self.win._auto_finished(summary)
         self.refresh_export_state()
+        self.sa.ensureWidgetVisible(self.result_lbl, 0, 60)
 
     def _on_error(self, msg):
         self._finish_run()
